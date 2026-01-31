@@ -1,6 +1,12 @@
 import os, pathlib
 
-from fairseq import checkpoint_utils
+try:
+    from fairseq import checkpoint_utils
+except (ImportError, ValueError):
+    # Use mock fairseq for macOS compatibility
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+    import mock_fairseq as checkpoint_utils
 
 
 def get_index_path_from_model(sid):

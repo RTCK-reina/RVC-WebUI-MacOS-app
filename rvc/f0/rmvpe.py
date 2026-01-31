@@ -39,26 +39,34 @@ def rmvpe_jit_export(
     return ckpt
 
 
+from .e2e import E2E
+from .mel import MelSpectrogram
+
 class RMVPE(nn.Module):
     def __init__(self, model_path, device="cpu", is_half=True):
         super().__init__()
         self.device = device
         self.is_half = is_half
+        self.hop_length = 160
+        self.mel_extractor = MelSpectrogram(
+            is_half=is_half,
+            n_mel_channels=128,
+            sampling_rate=16000,
+            win_length=1024,
+            hop_length=160,
+            mel_fmin=30,
+            mel_fmax=8000,
+            device=device
+        ).to(device)
+        self.cents_mapping = 20 * np.arange(360) + 1997.3794084376191
         
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
         
         try:
-            # Load the model using torch.load instead of torch.jit.load
-            state_dict = torch.load(model_path, map_location=device, weights_only=False)
-            self.model = nn.Sequential(
-                nn.Conv2d(1, 32, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv2d(32, 32, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv2d(32, 1, kernel_size=3, padding=1)
-            )
-            self.model.load_state_dict(state_dict)
+            self.model = E2E(4, 1, (2, 2))
+            ckpt = torch.load(model_path, map_location=device, weights_only=False)
+            self.model.load_state_dict(ckpt)
             self.model.eval()
             if is_half:
                 self.model = self.model.half()

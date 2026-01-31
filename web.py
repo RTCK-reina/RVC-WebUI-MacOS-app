@@ -10,6 +10,7 @@ load_dotenv("sha256.env")
 if sys.platform == "darwin":
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
     os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from infer.modules.vc import VC, show_info, hash_similarity
 from infer.modules.uvr5.modules import uvr
@@ -78,7 +79,7 @@ if config.dml == True:
 
 i18n = I18nAuto()
 logger.info(i18n)
-# 判断是否有能用来训练和加速推理的N卡
+
 ngpu = torch.cuda.device_count()
 gpu_infos = []
 mem = []

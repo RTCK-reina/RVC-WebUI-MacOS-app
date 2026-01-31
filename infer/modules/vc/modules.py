@@ -30,7 +30,7 @@ class VC:
         self.config = config
 
     def get_vc(self, sid, *to_return_protect):
-        logger.info("Get sid: " + sid)
+        logger.info("Get sid: " + str(sid))
 
         to_return_protect0 = {
             "visible": self.if_f0 != 0,
@@ -47,7 +47,7 @@ class VC:
             "__type__": "update",
         }
 
-        if sid == "" or sid == []:
+        if sid is None or sid == "" or sid == []:
             if (
                 self.hubert_model is not None
             ):  # 考虑到轮询, 需要加个判断看是否 sid 是由有模型切换到无模型的
@@ -196,7 +196,7 @@ class VC:
         except Exception as e:
             info = traceback.format_exc()
             logger.warning(info)
-            return str(e), None
+            raise e
 
     def vc_multi(
         self,

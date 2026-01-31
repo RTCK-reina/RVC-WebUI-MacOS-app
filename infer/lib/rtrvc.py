@@ -3,7 +3,14 @@ import os
 from typing import Union, Literal, Optional
 from pathlib import Path
 
-import fairseq
+try:
+    import fairseq
+except (ImportError, ValueError):
+    # Use mock fairseq for macOS compatibility
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    import mock_fairseq as fairseq
+    fairseq.checkpoint_utils = fairseq
 import faiss
 import numpy as np
 import torch

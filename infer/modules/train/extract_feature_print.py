@@ -23,7 +23,18 @@ else:
     os.environ["CUDA_VISIBLE_DEVICES"] = str(i_gpu)
     version = sys.argv[6]
     is_half = sys.argv[7].lower() == "true"
-import fairseq
+
+try:
+    import fairseq
+except (ImportError, ValueError):
+    # Use mock fairseq for macOS compatibility
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+    import mock_fairseq as fairseq
+    fairseq.checkpoint_utils = fairseq
+    fairseq.modules = type('modules', (), {'grad_multiply': type('grad_multiply', (), {'GradMultiply': type('GradMultiply', (), {'forward': lambda *args: None})})()})()
+
 import numpy as np
 import torch
 import torch.nn.functional as F
