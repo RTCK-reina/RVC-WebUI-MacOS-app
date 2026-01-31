@@ -42,6 +42,7 @@ def rmvpe_jit_export(
 from .e2e import E2E
 from .mel import MelSpectrogram
 
+
 class RMVPE(nn.Module):
     def __init__(self, model_path, device="cpu", is_half=True):
         super().__init__()
@@ -56,13 +57,13 @@ class RMVPE(nn.Module):
             hop_length=160,
             mel_fmin=30,
             mel_fmax=8000,
-            device=device
+            device=device,
         ).to(device)
         self.cents_mapping = 20 * np.arange(360) + 1997.3794084376191
-        
+
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
-        
+
         try:
             self.model = E2E(4, 1, (2, 2))
             ckpt = torch.load(model_path, map_location=device, weights_only=False)
@@ -73,14 +74,14 @@ class RMVPE(nn.Module):
             self.model = self.model.to(device)
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {str(e)}")
-    
+
     def forward(self, x):
         with torch.no_grad():
             x = x.to(self.device)
             if self.is_half:
                 x = x.half()
             return self.model(x)
-            
+
     def calculate(self, x):
         return self.forward(x)
 

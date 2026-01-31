@@ -8,8 +8,10 @@ try:
 except (ImportError, ValueError):
     # Use mock fairseq for macOS compatibility
     import sys
+
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
     import mock_fairseq as fairseq
+
     fairseq.checkpoint_utils = fairseq
 import faiss
 import numpy as np

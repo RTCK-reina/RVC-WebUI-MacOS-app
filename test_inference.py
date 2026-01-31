@@ -38,7 +38,7 @@ vc.get_vc(sid)
 print(f"Running inference on: {input_audio}")
 # Run inference
 info, audio_opt = vc.vc_single(
-    sid=0, # sid is ignored in vc_single if net_g is already loaded, but passed as argument. Wait, vc_single signature: sid, input_audio_path, ...
+    sid=0,  # sid is ignored in vc_single if net_g is already loaded, but passed as argument. Wait, vc_single signature: sid, input_audio_path, ...
     input_audio_path=input_audio,
     f0_up_key=f0_up_key,
     f0_file=None,
@@ -49,7 +49,7 @@ info, audio_opt = vc.vc_single(
     filter_radius=filter_radius,
     resample_sr=resample_sr,
     rms_mix_rate=rms_mix_rate,
-    protect=protect
+    protect=protect,
 )
 
 print("Inference Result Info:")
@@ -60,5 +60,6 @@ if "Success" in info:
 else:
     print(info)
     import traceback
+
     traceback.print_exc()
     exit(1)

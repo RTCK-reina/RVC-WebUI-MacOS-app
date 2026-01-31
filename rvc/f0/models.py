@@ -7,6 +7,7 @@ import os
 
 from .e2e import E2E
 
+
 def get_rmvpe(model_path, device, is_half=True):
     try:
         model = E2E(4, 1, (2, 2))
