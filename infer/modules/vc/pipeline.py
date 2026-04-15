@@ -266,8 +266,9 @@ class Pipeline(object):
                 pitch, pitchf = f0_method
             pitch = pitch[:p_len]
             pitchf = pitchf[:p_len]
-            if "mps" not in str(self.device) and "xpu" not in str(self.device):
-                pitchf = pitchf.astype(np.float32)
+            # MPS does not support float64; normalize to float32 on every device
+            # to avoid "Cannot convert a MPS Tensor to float64 dtype" at .to(mps).
+            pitchf = pitchf.astype(np.float32)
             pitch = torch.tensor(pitch, device=self.device).unsqueeze(0).long()
             pitchf = torch.tensor(pitchf, device=self.device).unsqueeze(0).float()
         t2 = time()
