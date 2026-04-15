@@ -58,7 +58,51 @@ import torch.multiprocessing as mp
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
+# tensorboard is intentionally not shipped in the macOS .app bundle
+# (requirements/app.txt drops tensorboard* to keep the env lean). We still
+# want the upstream training loop to run unmodified, so provide a no-op
+# SummaryWriter stub that swallows every call used by the training loop.
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    class SummaryWriter:  # type: ignore[no-redef]
+        """No-op tensorboard SummaryWriter for bundles without tensorboard."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def add_scalar(self, *args, **kwargs):
+            pass
+
+        def add_scalars(self, *args, **kwargs):
+            pass
+
+        def add_image(self, *args, **kwargs):
+            pass
+
+        def add_images(self, *args, **kwargs):
+            pass
+
+        def add_audio(self, *args, **kwargs):
+            pass
+
+        def add_histogram(self, *args, **kwargs):
+            pass
+
+        def add_text(self, *args, **kwargs):
+            pass
+
+        def add_figure(self, *args, **kwargs):
+            pass
+
+        def add_graph(self, *args, **kwargs):
+            pass
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
 
 from infer.lib.train.data_utils import (
     DistributedBucketSampler,
@@ -236,13 +280,15 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
-    # net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
-    # net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        pass
-    else:
-        net_g = DDP(net_g)
-        net_d = DDP(net_d)
+    # DDP wrapping removed for single-process macOS training: world_size=1
+    # has no peers to all-gather with, and MPS does not implement
+    # c10d::allgather_ (pytorch#141287), so `DDP(net_g)` crashed during
+    # _verify_param_shape_across_processes with
+    # "NotImplementedError: The distributed operator 'c10d::allgather_' is
+    # not currently implemented for the MPS device" — distributed ops cannot
+    # fall back to CPU. Operate on the raw modules instead; the
+    # `hasattr(net_g, "module")` guards below fall through to the non-DDP
+    # branch (plain `net_g.load_state_dict`), which is the desired behavior.
 
     try:  # 如果能加载自动resume
         _, _, _, epoch_str = utils.load_checkpoint(
