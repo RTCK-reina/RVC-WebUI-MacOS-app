@@ -241,6 +241,18 @@ def rpc_preprocess(params: dict, ctx):
             cancel_event=task.cancel_event, proc=proc, phase="preprocessing",
         )
         emit_progress(task_id, 100.0, "preprocess done", "preprocessing")
+        # A non-zero exit from preprocess.py means the stage failed (missing
+        # inputs, permission error, load_audio traceback, etc.). Report that
+        # faithfully instead of masking the failure as success — otherwise
+        # train_all happily proceeds through stages that never produced
+        # output and the downstream traceback is misleading.
+        if proc.returncode not in (0, None):
+            return {
+                "status": "error",
+                "error": "preprocess.py exited with code %d" % proc.returncode,
+                "log": log,
+                "exp_dir": str(exp_dir),
+            }
         return {"status": "success", "log": log, "exp_dir": str(exp_dir)}
     except Exception as e:
         return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -296,6 +308,11 @@ def rpc_extract_f0(params: dict, ctx):
                 log_path, done_event, task_id, emit_progress,
                 cancel_event=task.cancel_event, proc=proc, phase="f0",
             )
+            if proc.returncode not in (0, None):
+                return {
+                    "status": "error",
+                    "error": "extract_f0_print.py exited with code %d" % proc.returncode,
+                }
 
         if task.cancel_event.is_set():
             return {"status": "cancelled"}
@@ -326,6 +343,17 @@ def rpc_extract_f0(params: dict, ctx):
             cancel_event=task.cancel_event, procs=procs, phase="features",
         )
         emit_progress(task_id, 100.0, "feature extraction done", "features")
+        # Check exit codes of all feature-extraction workers; any non-zero
+        # exit means that GPU shard failed (e.g. fairseq import error,
+        # missing HuBERT weights, etc.) and the rest of the pipeline has
+        # incomplete feature output to train on.
+        bad = [p.returncode for p in procs if p.returncode not in (0, None)]
+        if bad:
+            return {
+                "status": "error",
+                "error": "extract_feature_print.py worker(s) exited with codes %r" % bad,
+                "log": log,
+            }
         return {"status": "success", "log": log}
     except Exception as e:
         return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -427,6 +455,16 @@ def rpc_train(params: dict, ctx):
             percent_from_log=_train_percent_from_log,
         )
         emit_progress(task_id, 100.0, "training done", "training")
+        # A non-zero train.py exit means training crashed (missing package,
+        # empty filelist, MPS op error, ...). Propagate that so rpc_train_all
+        # stops instead of advancing to train_index with no checkpoint.
+        if proc.returncode not in (0, None):
+            return {
+                "status": "error",
+                "error": "train.py exited with code %d" % proc.returncode,
+                "log": log,
+                "exp_dir": str(exp_dir),
+            }
         return {"status": "success", "log": log, "exp_dir": str(exp_dir)}
     except Exception as e:
         return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -436,22 +474,42 @@ def rpc_train(params: dict, ctx):
 
 
 def _write_filelist(config, exp_dir: Path, sr_name: str, if_f0: bool, spk_id: int, version: str):
-    """Write the filelist.txt consumed by infer/modules/train/train.py."""
+    """Write the filelist.txt consumed by infer/modules/train/train.py.
+
+    Normalize stems across directories that use different naming conventions:
+      * 0_gt_wavs/0_1.wav           -> stem "0_1"
+      * 3_featureNNN/0_1.npy        -> stem "0_1"
+      * 2a_f0/0_1.wav.npy           -> Path.stem gives "0_1.wav" (strip trailing .wav)
+      * 2b-f0nsf/0_1.wav.npy        -> same
+    Without the trailing-".wav" strip the f0/f0nsf stems never matched
+    gt_wavs / feature stems, so the set intersection was always empty and
+    filelist.txt ended up zero-byte (train.py then had nothing to train on).
+    """
+
+    def _normalized_stem(p: Path) -> str:
+        s = p.stem  # strips one extension ".npy" or ".wav"
+        # For "foo.wav.npy" Path.stem is "foo.wav"; peel the extra ".wav" off
+        # so the set intersection lines up across directories.
+        if s.endswith(".wav"):
+            s = s[:-4]
+        return s
+
     gt_wavs_dir = exp_dir / "0_gt_wavs"
     feature_dir = exp_dir / ("3_feature256" if version == "v1" else "3_feature768")
     if if_f0:
         f0_dir = exp_dir / "2a_f0"
         f0nsf_dir = exp_dir / "2b-f0nsf"
         names = (
-            {p.stem for p in gt_wavs_dir.iterdir()}
-            & {p.stem for p in feature_dir.iterdir()}
-            & {p.stem for p in f0_dir.iterdir()}
-            & {p.stem for p in f0nsf_dir.iterdir()}
+            {_normalized_stem(p) for p in gt_wavs_dir.iterdir()}
+            & {_normalized_stem(p) for p in feature_dir.iterdir()}
+            & {_normalized_stem(p) for p in f0_dir.iterdir()}
+            & {_normalized_stem(p) for p in f0nsf_dir.iterdir()}
         )
     else:
-        names = {p.stem for p in gt_wavs_dir.iterdir()} & {
-            p.stem for p in feature_dir.iterdir()
-        }
+        names = (
+            {_normalized_stem(p) for p in gt_wavs_dir.iterdir()}
+            & {_normalized_stem(p) for p in feature_dir.iterdir()}
+        )
 
     opt = []
     for name in names:
