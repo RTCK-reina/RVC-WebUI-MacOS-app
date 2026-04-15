@@ -10,6 +10,7 @@ import onnxruntime as ort
 
 from rvc.jit import load_inputs, get_jit_model, export_jit_model, save_pickle
 
+from .e2e import E2E
 from .mel import MelSpectrogram
 from .f0 import F0Predictor
 from .models import get_rmvpe
@@ -39,40 +40,75 @@ def rmvpe_jit_export(
     return ckpt
 
 
-class RMVPE(nn.Module):
-    def __init__(self, model_path, device="cpu", is_half=True):
-        super().__init__()
-        self.device = device
-        self.is_half = is_half
-        
+class RMVPE(F0Predictor):
+    """RMVPE pitch extractor.
+
+    Wraps the :class:`E2E` model + :class:`MelSpectrogram` front-end + 360-class
+    pitch decode grid into the :class:`F0Predictor` contract used by
+    :class:`rvc.f0.gen.Generator`.
+
+    Parameters come from the RMVPE reference implementation:
+      * 16 kHz mono audio, 10 ms hop (160 samples)
+      * 128-band log-mel with 1024-pt window, fmin=30, fmax=8000
+      * 360 cents-per-bin pitch grid @ 20 cents resolution, zero-padded ±4
+
+    The earlier macOS port built ``self.model`` as a Conv2d×3 placeholder that
+    never matched ``rmvpe.pt``; it also inherited from ``nn.Module`` instead of
+    :class:`F0Predictor`, leaving ``_interpolate_f0`` / ``_resize_f0`` (used by
+    ``compute_f0``) undefined. Both are fixed here.
+    """
+
+    def __init__(self, model_path, is_half=False, device="cpu"):
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        
-        try:
-            # Load the model using torch.load instead of torch.jit.load
-            state_dict = torch.load(model_path, map_location=device, weights_only=False)
-            self.model = nn.Sequential(
-                nn.Conv2d(1, 32, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv2d(32, 32, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv2d(32, 1, kernel_size=3, padding=1)
-            )
-            self.model.load_state_dict(state_dict)
-            self.model.eval()
-            if is_half:
-                self.model = self.model.half()
-            self.model = self.model.to(device)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load model: {str(e)}")
-    
+            raise FileNotFoundError(f"RMVPE model file not found: {model_path}")
+
+        # RMVPE operates on 16 kHz mono audio with a 10 ms frame hop.
+        super().__init__(
+            hop_length=160,
+            f0_min=50,
+            f0_max=1100,
+            sampling_rate=16000,
+            device=device,
+        )
+        self.is_half = is_half
+        self.resample_kernel = {}
+
+        # Build the real 741-parameter RMVPE architecture and load its weights.
+        model = E2E(n_blocks=4, n_gru=1, kernel_size=(2, 2))
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(state_dict)
+        model.eval()
+        if is_half:
+            model = model.half()
+        self.model = model.to(device)
+
+        # Log-mel front-end: 128-band, 1024-pt window, 10 ms hop, 30–8000 Hz.
+        self.mel_extractor = MelSpectrogram(
+            is_half=is_half,
+            n_mel_channels=128,
+            sampling_rate=16000,
+            win_length=1024,
+            hop_length=160,
+            n_fft=1024,
+            mel_fmin=30,
+            mel_fmax=8000,
+            device=device,
+        ).to(device)
+
+        # 360-class pitch grid, 20 cents per bin, zero-padded ±4 so the
+        # argmax-centered averaging window always has a valid lookup range
+        # (_to_local_average_cents pads salience the same way).
+        self.cents_mapping = np.pad(
+            20 * np.arange(360) + 1997.3794084376191, (4, 4)
+        )
+
     def forward(self, x):
         with torch.no_grad():
             x = x.to(self.device)
             if self.is_half:
                 x = x.half()
             return self.model(x)
-            
+
     def calculate(self, x):
         return self.forward(x)
 
