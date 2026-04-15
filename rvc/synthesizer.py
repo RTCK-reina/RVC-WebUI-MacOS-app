@@ -48,8 +48,6 @@ def synthesizer_jit_export(
     if not save_path:
         save_path = model_path.rstrip(".pth")
         save_path += ".half.jit" if is_half else ".jit"
-    if "cuda" in str(device) and ":" not in str(device):
-        device = torch.device("cuda:0")
     from rvc.synthesizer import load_synthesizer
 
     model, cpt = load_synthesizer(model_path, device)

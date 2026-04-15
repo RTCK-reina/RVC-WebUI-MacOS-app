@@ -55,7 +55,9 @@ Check out our [Demo Video](https://www.bilibili.com/video/BV1pm4y1z7Gm/) here!
 > For the reason of the version limitation, please refer to this [bug](https://github.com/facebookresearch/fairseq/issues/5012).
 
 ```bash
-python --version # 3.8 <= Python < 3.11
+python --version # 3.8 <= Python < 3.11  (upstream / requirements/main.txt)
+# Python 3.11+ is supported via requirements/py311.txt (uses a fairseq fork).
+# The macOS section below targets Python 3.10+ with Apple Silicon.
 ```
 
 ### Linux/MacOS One-click Dependency Installation & Startup Script

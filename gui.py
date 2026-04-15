@@ -589,7 +589,10 @@ if __name__ == "__main__":
                     )
                 if event == "start_vc" and not flag_vc:
                     if self.set_values(values) == True:
-                        printt("cuda_is_available: %s", torch.cuda.is_available())
+                        printt(
+                            "mps_is_available: %s",
+                            torch.backends.mps.is_available(),
+                        )
                         self.start_vc()
                         settings = {
                             "pth_path": values["pth_path"],
@@ -749,7 +752,9 @@ if __name__ == "__main__":
             return True
 
         def start_vc(self):
-            torch.cuda.empty_cache()
+            from infer.lib.device import empty_device_cache
+
+            empty_device_cache()
             self.rvc = rtrvc.RVC(
                 self.gui_config.pitch,
                 self.gui_config.formant,
@@ -760,7 +765,6 @@ if __name__ == "__main__":
                 self.config.device,
                 self.config.use_jit,
                 self.config.is_half,
-                self.config.dml,
             )
             self.gui_config.samplerate = (
                 self.rvc.tgt_sr

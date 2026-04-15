@@ -1,4 +1,1 @@
-from . import ipex
-import sys
-
-del sys.modules["rvc.ipex"]
+# macOS-only build: Intel Extension for PyTorch (rvc.ipex) is not shipped.

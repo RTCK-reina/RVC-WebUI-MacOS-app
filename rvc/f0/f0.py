@@ -18,7 +18,8 @@ class F0Predictor(object):
         self.f0_max = f0_max
         self.sampling_rate = sampling_rate
         if device is None:
-            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            # macOS build: MPS if available, CPU otherwise.
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
         self.device = device
 
     def compute_f0(

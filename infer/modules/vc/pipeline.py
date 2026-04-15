@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from scipy import signal
 
+from infer.lib.device import empty_device_cache
 from rvc.f0 import Generator
 
 now_dir = os.getcwd()
@@ -124,8 +125,8 @@ class Pipeline(object):
 
             try:
                 score, ix = index.search(npy, k=8)
-            except:
-                raise Exception("index mistatch")
+            except Exception as e:
+                raise RuntimeError("index mismatch") from e
             weight = np.square(1 / score)
             weight /= weight.sum(axis=1, keepdims=True)
             npy = np.sum(big_npy[ix] * np.expand_dims(weight, axis=2), axis=1)
@@ -174,10 +175,6 @@ class Pipeline(object):
                 .numpy()
             )
         del feats, p_len, padding_mask
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        elif torch.backends.mps.is_available():
-            torch.mps.empty_cache()
         t2 = time()
         times[0] += t1 - t0
         times[2] += t2 - t1
@@ -213,8 +210,8 @@ class Pipeline(object):
             try:
                 index = faiss.read_index(file_index)
                 big_npy = index.reconstruct_n(0, index.ntotal)
-            except:
-                traceback.print_exc()
+            except Exception:
+                logger.exception("failed to load faiss index: %s", file_index)
                 index = big_npy = None
         else:
             index = big_npy = None
@@ -251,8 +248,8 @@ class Pipeline(object):
                         for line in lines:
                             inp_f0.append([float(i) for i in line.split(",")])
                         inp_f0 = np.array(inp_f0, dtype="float32")
-            except:
-                traceback.print_exc()
+            except Exception:
+                logger.exception("failed to parse f0 file: %s", f0_file.name)
         sid = torch.tensor(sid, device=self.device).unsqueeze(0).long()
         pitch, pitchf = None, None
         if if_f0:
@@ -269,7 +266,7 @@ class Pipeline(object):
                 pitch, pitchf = f0_method
             pitch = pitch[:p_len]
             pitchf = pitchf[:p_len]
-            if "mps" not in str(self.device) or "xpu" not in str(self.device):
+            if "mps" not in str(self.device) and "xpu" not in str(self.device):
                 pitchf = pitchf.astype(np.float32)
             pitch = torch.tensor(pitch, device=self.device).unsqueeze(0).long()
             pitchf = torch.tensor(pitchf, device=self.device).unsqueeze(0).float()
@@ -349,7 +346,7 @@ class Pipeline(object):
         audio_opt = np.concatenate(audio_opt)
         if rms_mix_rate != 1:
             audio_opt = change_rms(audio, 16000, audio_opt, tgt_sr, rms_mix_rate)
-        if tgt_sr != resample_sr >= 16000:
+        if tgt_sr != resample_sr and resample_sr >= 16000:
             audio_opt = librosa.resample(
                 audio_opt, orig_sr=tgt_sr, target_sr=resample_sr
             )
@@ -359,8 +356,5 @@ class Pipeline(object):
             max_int16 /= audio_max
         np.multiply(audio_opt, max_int16, audio_opt)
         del pitch, pitchf, sid
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        elif torch.backends.mps.is_available():
-            torch.mps.empty_cache()
+        empty_device_cache()
         return audio_opt

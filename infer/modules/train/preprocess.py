@@ -13,7 +13,6 @@ n_p = int(sys.argv[3])
 exp_dir = sys.argv[4]
 noparallel = sys.argv[5] == "True"
 per = float(sys.argv[6])
-import os
 import traceback
 
 import numpy as np

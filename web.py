@@ -62,72 +62,27 @@ if not config.nocheck:
         if config.update:
             download_all_assets(tmpdir=tmp)
             if not check_all_assets(update=config.update):
-                logging.error("counld not satisfy all assets needed.")
+                logging.error("could not satisfy all assets needed.")
                 exit(1)
-
-if config.dml == True:
-
-    def forward_dml(ctx, x, scale):
-        ctx.scale = scale
-        res = x.clone().detach()
-        return res
-
-    import fairseq
-
-    fairseq.modules.grad_multiply.GradMultiply.forward = forward_dml
 
 i18n = I18nAuto()
 logger.info(i18n)
-# 判断是否有能用来训练和加速推理的N卡
-ngpu = torch.cuda.device_count()
+
+# macOS build: the only supported accelerator is Apple Silicon MPS. No CUDA /
+# XPU / DirectML detection. Unified memory makes a precise free-memory estimate
+# hard; use a conservative 8 GB assumption when tuning batch size on MPS.
 gpu_infos = []
 mem = []
 if_gpu_ok = False
 
-if torch.cuda.is_available() or ngpu != 0:
-    for i in range(ngpu):
-        gpu_name = torch.cuda.get_device_name(i)
-        if any(
-            value in gpu_name.upper()
-            for value in [
-                "10",
-                "16",
-                "20",
-                "30",
-                "40",
-                "A2",
-                "A3",
-                "A4",
-                "P4",
-                "A50",
-                "500",
-                "A60",
-                "70",
-                "80",
-                "90",
-                "M4",
-                "T4",
-                "TITAN",
-                "4060",
-                "L",
-                "6000",
-            ]
-        ):
-            # A10#A100#V100#A40#P40#M40#K80#A4500
-            if_gpu_ok = True  # 至少有一张能用的N卡
-            gpu_infos.append("%s\t%s" % (i, gpu_name))
-            mem.append(
-                int(
-                    torch.cuda.get_device_properties(i).total_memory
-                    / 1024
-                    / 1024
-                    / 1024
-                    + 0.4
-                )
-            )
+if torch.backends.mps.is_available():
+    if_gpu_ok = True
+    gpu_infos.append("0\tApple Silicon (MPS)")
+    mem.append(8)
+
 if if_gpu_ok and len(gpu_infos) > 0:
     gpu_info = "\n".join(gpu_infos)
-    default_batch_size = min(mem) // 2
+    default_batch_size = max(1, min(mem) // 2)
 else:
     gpu_info = i18n(
         "Unfortunately, there is no compatible GPU available to support your training."
@@ -200,26 +155,13 @@ sr_dict = {
 
 
 def if_done(done, p):
-    while 1:
-        if p.poll() is None:
-            sleep(0.5)
-        else:
-            break
+    p.wait()
     done[0] = True
 
 
 def if_done_multi(done, ps):
-    while 1:
-        # poll==None代表进程未结束
-        # 只要有一个进程未结束都不停
-        flag = 1
-        for p in ps:
-            if p.poll() is None:
-                flag = 0
-                sleep(0.5)
-                break
-        if flag == 1:
-            break
+    for p in ps:
+        p.wait()
     done[0] = True
 
 

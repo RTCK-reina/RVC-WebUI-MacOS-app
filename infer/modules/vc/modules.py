@@ -9,6 +9,7 @@ import torch
 from io import BytesIO
 
 from infer.lib.audio import load_audio, wav2, save_audio, float_np_array_to_wav_buf
+from infer.lib.device import empty_device_cache
 from rvc.synthesizer import get_synthesizer, load_synthesizer
 from .info import show_model_info
 from .pipeline import Pipeline
@@ -53,22 +54,14 @@ class VC:
             ):  # 考虑到轮询, 需要加个判断看是否 sid 是由有模型切换到无模型的
                 logger.info("Clean model cache")
                 del (self.net_g, self.n_spk, self.hubert_model, self.tgt_sr)  # ,cpt
-                self.hubert_model = self.net_g = self.n_spk = self.hubert_model = (
-                    self.tgt_sr
-                ) = None
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                elif torch.backends.mps.is_available():
-                    torch.mps.empty_cache()
+                self.hubert_model = self.net_g = self.n_spk = self.tgt_sr = None
+                empty_device_cache()
                 ###楼下不这么折腾清理不干净
                 self.net_g, self.cpt = get_synthesizer(self.cpt, self.config.device)
                 self.if_f0 = self.cpt.get("f0", 1)
                 self.version = self.cpt.get("version", "v1")
                 del self.net_g, self.cpt
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                elif torch.backends.mps.is_available():
-                    torch.mps.empty_cache()
+                empty_device_cache()
             return (
                 (
                     {"visible": False, "__type__": "update"},
@@ -228,8 +221,8 @@ class VC:
                     ]
                 else:
                     paths = [path.name for path in paths]
-            except:
-                traceback.print_exc()
+            except Exception:
+                logger.exception("failed to enumerate input paths")
                 paths = [path.name for path in paths]
             infos = []
             for path in paths:
@@ -257,10 +250,10 @@ class VC:
                             tgt_sr,
                             f32=True,
                         )
-                    except:
+                    except Exception:
                         info += traceback.format_exc()
                 infos.append("%s->%s" % (os.path.basename(path), info))
                 yield "\n".join(infos)
             yield "\n".join(infos)
-        except:
+        except Exception:
             yield traceback.format_exc()

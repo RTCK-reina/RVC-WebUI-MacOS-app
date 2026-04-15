@@ -1,0 +1,11 @@
+services:
+  rvc:
+    build:
+      context: .
+      dockerfile: Dockerfile.apple
+    container_name: rvc-macos
+    volumes:
+      - ./weights:/app/assets/weights
+      - ./opt:/app/opt
+    ports:
+      - "7860:7860"

@@ -1,4 +1,5 @@
 from io import BytesIO
+import logging
 import os
 from typing import Union, Literal, Optional
 from pathlib import Path
@@ -14,6 +15,8 @@ from torchaudio.transforms import Resample
 from rvc.f0 import Generator
 from rvc.synthesizer import load_synthesizer
 
+logger = logging.getLogger(__name__)
+
 
 class RVC:
     def __init__(
@@ -27,17 +30,8 @@ class RVC:
         device: str = "cpu",
         use_jit: bool = False,
         is_half: bool = False,
-        is_dml: bool = False,
     ) -> None:
-        if is_dml:
-
-            def forward_dml(ctx, x, scale):
-                ctx.scale = scale
-                res = x.clone().detach()
-                return res
-
-            fairseq.modules.grad_multiply.GradMultiply.forward = forward_dml
-
+        # macOS build: no DirectML fallback (see gui.py/RVC for removed flag).
         self.device = device
         self.f0_up_key = key
         self.formant_shift = formant
@@ -109,11 +103,7 @@ class RVC:
             self.net_g.infer = self.net_g.forward
             self.net_g.eval().to(self.device)
 
-        if (
-            self.use_jit
-            and not is_dml
-            and not (self.is_half and "cpu" in str(self.device))
-        ):
+        if self.use_jit and not (self.is_half and "cpu" in str(self.device)):
             set_jit_model()
         else:
             set_default_model()
@@ -182,8 +172,9 @@ class RVC:
                         * self.index_rate
                         + (1 - self.index_rate) * feats[0][skip_head // 2 :]
                     )
-        except:
-            pass
+        except Exception:
+            # realtime path: never crash the audio loop, but leave a breadcrumb
+            logger.exception("faiss retrieval failed; skipping index contribution")
 
         p_len = input_wav.shape[0] // self.window
         factor = pow(2, self.formant_shift / 12)

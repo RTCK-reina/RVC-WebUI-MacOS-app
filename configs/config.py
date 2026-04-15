@@ -1,14 +1,19 @@
+"""Runtime configuration for the macOS-focused RVC build.
+
+This file is deliberately slim: only MPS (Apple Silicon) and CPU backends are
+supported. All CUDA, XPU (Intel Arc), and DirectML code paths from the upstream
+project have been removed because they cannot run on macOS.
+"""
+
 import argparse
-import os
-import sys
 import json
+import logging
+import os
 import shutil
+import sys
 from multiprocessing import cpu_count
 
 import torch
-
-# TODO: move device selection into rvc
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +40,9 @@ def singleton_variable(func):
 @singleton_variable
 class Config:
     def __init__(self):
-        self.device = "cuda:0"
-        self.is_half = True
+        # macOS does not support CUDA; MPS if available, CPU otherwise.
+        self.device = "cpu"
+        self.is_half = False  # MPS forces fp32 on Apple Silicon
         self.use_jit = False
         self.n_cpu = 0
         self.gpu_name = None
@@ -48,7 +54,6 @@ class Config:
             self.global_link,
             self.noparallel,
             self.noautoopen,
-            self.dml,
             self.nocheck,
             self.update,
         ) = self.arg_parse()
@@ -85,11 +90,6 @@ class Config:
             help="Do not open in browser automatically",
         )
         parser.add_argument(
-            "--dml",
-            action="store_true",
-            help="torch_dml",
-        )
-        parser.add_argument(
             "--nocheck", action="store_true", help="Run without checking assets"
         )
         parser.add_argument(
@@ -105,12 +105,11 @@ class Config:
             cmd_opts.global_link,
             cmd_opts.noparallel,
             cmd_opts.noautoopen,
-            cmd_opts.dml,
             cmd_opts.nocheck,
             cmd_opts.update,
         )
 
-    # has_mps is only available in nightly pytorch (for now) and MasOS 12.3+.
+    # has_mps is only available in nightly pytorch (for now) and macOS 12.3+.
     # check `getattr` and try it for compatibility
     @staticmethod
     def has_mps() -> bool:
@@ -122,94 +121,36 @@ class Config:
         except Exception:
             return False
 
-    @staticmethod
-    def has_xpu() -> bool:
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            return True
-        else:
-            return False
-
     def use_fp32_config(self):
         for config_file in version_config_list:
             self.json_config[config_file]["train"]["fp16_run"] = False
-            with open(f"configs/inuse/{config_file}", "r") as f:
-                strr = f.read().replace("true", "false")
-            with open(f"configs/inuse/{config_file}", "w") as f:
-                f.write(strr)
-            logger.info("overwrite " + config_file)
+            inuse_path = f"configs/inuse/{config_file}"
+            with open(inuse_path, "r") as f:
+                data = json.load(f)
+            if data.get("train", {}).get("fp16_run") is not False:
+                data.setdefault("train", {})["fp16_run"] = False
+                with open(inuse_path, "w") as f:
+                    json.dump(data, f, indent=2)
+                logger.info("overwrite " + config_file)
         self.preprocess_per = 3.0
-        logger.info("overwrite preprocess_per to %d" % (self.preprocess_per))
+        logger.info("overwrite preprocess_per to %.1f" % (self.preprocess_per))
 
     def device_config(self):
-        if torch.cuda.is_available():
-            if self.has_xpu():
-                self.device = self.instead = "xpu:0"
-                self.is_half = True
-            i_device = int(self.device.split(":")[-1])
-            self.gpu_name = torch.cuda.get_device_name(i_device)
-            if (
-                ("16" in self.gpu_name and "V100" not in self.gpu_name.upper())
-                or "P40" in self.gpu_name.upper()
-                or "P10" in self.gpu_name.upper()
-                or "1060" in self.gpu_name
-                or "1070" in self.gpu_name
-                or "1080" in self.gpu_name
-            ):
-                logger.info("Found GPU %s, force to fp32", self.gpu_name)
-                self.is_half = False
-                self.use_fp32_config()
-            else:
-                logger.info("Found GPU %s", self.gpu_name)
-            self.gpu_mem = int(
-                torch.cuda.get_device_properties(i_device).total_memory
-                / 1024
-                / 1024
-                / 1024
-                + 0.4
-            )
-            if self.gpu_mem <= 4:
-                self.preprocess_per = 3.0
-        elif self.has_mps():
-            logger.info("No supported Nvidia GPU found")
+        if self.has_mps():
+            logger.info("Using Apple Silicon MPS backend (fp32 forced)")
             self.device = self.instead = "mps"
-            self.is_half = False
-            self.use_fp32_config()
         else:
-            logger.info("No supported Nvidia GPU found")
+            logger.info("No GPU acceleration available; falling back to CPU")
             self.device = self.instead = "cpu"
-            self.is_half = False
-            self.use_fp32_config()
+        self.is_half = False
+        self.use_fp32_config()
 
         if self.n_cpu == 0:
             self.n_cpu = cpu_count()
 
-        if self.is_half:
-            # 6G显存配置
-            x_pad = 3
-            x_query = 10
-            x_center = 60
-            x_max = 65
-        else:
-            # 5G显存配置
-            x_pad = 1
-            x_query = 6
-            x_center = 38
-            x_max = 41
+        # fp32 path → upstream "5G" profile
+        x_pad, x_query, x_center, x_max = 1, 6, 38, 41
 
-        if self.gpu_mem is not None and self.gpu_mem <= 4:
-            x_pad = 1
-            x_query = 5
-            x_center = 30
-            x_max = 32
-        if self.dml:
-            logger.info("Use DirectML instead")
-            import torch_directml
-
-            self.device = torch_directml.device(torch_directml.default_device())
-            self.is_half = False
-        else:
-            if self.instead:
-                logger.info(f"Use {self.instead} instead")
         logger.info(
             "Half-precision floating-point: %s, device: %s"
             % (self.is_half, self.device)
@@ -250,10 +191,5 @@ class CPUConfig:
         if self.n_cpu == 0:
             self.n_cpu = cpu_count()
 
-        # 5G显存配置
-        x_pad = 1
-        x_query = 6
-        x_center = 38
-        x_max = 41
-
+        x_pad, x_query, x_center, x_max = 1, 6, 38, 41
         return x_pad, x_query, x_center, x_max

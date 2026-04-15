@@ -36,8 +36,8 @@ uvicorn>=0.21.1
 colorama>=0.4.5
 pyworld==0.3.2
 httpx
-onnxruntime; sys_platform == 'darwin'
-onnxruntime-gpu; sys_platform != 'darwin'
+# macOS-only: use CPU onnxruntime.
+onnxruntime
 torchcrepe>=0.0.23
 fastapi
 torchfcpe

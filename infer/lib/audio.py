@@ -96,8 +96,9 @@ def load_audio(
 
     # Estimated maximum total number of samples to pre-allocate the array
     # AV stores length in microseconds by default
+    # Over-allocate by 2x to reduce np.resize calls
     estimated_total_samples = (
-        int(container.duration * sr // 1_000_000) if sr is not None else 48000
+        int(container.duration * sr // 1_000_000) * 2 if sr is not None else 96000
     )
     decoded_audio = np.zeros(
         (

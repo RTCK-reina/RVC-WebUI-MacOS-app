@@ -5,7 +5,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from infer.lib.audio import resample_audio, get_audio_properties
-import torch
+from infer.lib.device import empty_device_cache
 
 from configs import Config
 from infer.modules.uvr5.mdxnet import MDXNetDereverb
@@ -74,12 +74,12 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                     )
                 infos.append("%s->Success" % (os.path.basename(inp_path)))
                 yield "\n".join(infos)
-            except:
+            except Exception:
                 infos.append(
                     "%s->%s" % (os.path.basename(inp_path), traceback.format_exc())
                 )
                 yield "\n".join(infos)
-    except:
+    except Exception:
         infos.append(traceback.format_exc())
         yield "\n".join(infos)
     finally:
@@ -90,12 +90,7 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
             else:
                 del pre_fun.model
                 del pre_fun
-        except:
-            traceback.print_exc()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info("Executed torch.cuda.empty_cache()")
-        elif torch.backends.mps.is_available():
-            torch.mps.empty_cache()
-            logger.info("Executed torch.mps.empty_cache()")
+        except Exception:
+            logger.exception("failed to release pre_fun")
+        empty_device_cache()
     yield "\n".join(infos)
