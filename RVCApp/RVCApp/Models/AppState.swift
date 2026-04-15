@@ -65,20 +65,51 @@ final class AppState: ObservableObject {
         for _ in 0..<8 {
             let candidate = dir.appendingPathComponent("rpc_server.py")
             if fm.fileExists(atPath: candidate.path) {
-                let python = ProcessInfo.processInfo.environment["RVC_PYTHON"]
-                    ?? "/usr/bin/env python3"
-                return (python, candidate.path, dir.path)
+                return (resolveDevPython(), candidate.path, dir.path)
             }
             dir.deleteLastPathComponent()
         }
         // Last-ditch: use cwd.
-        let python = ProcessInfo.processInfo.environment["RVC_PYTHON"]
-            ?? "/usr/bin/env python3"
         return (
-            python,
+            resolveDevPython(),
             FileManager.default.currentDirectoryPath + "/rpc_server.py",
             FileManager.default.currentDirectoryPath
         )
+    }
+
+    /// Resolve a Python 3 interpreter path for the development fallback.
+    ///
+    /// Returns an absolute, executable path. Process.executableURL requires
+    /// a real file path — passing a string like "/usr/bin/env python3" as
+    /// a single executable would fail with ENOENT.
+    ///
+    /// Priority:
+    ///   1. RVC_PYTHON env var (must point at an executable file)
+    ///   2. Well-known macOS interpreter locations
+    ///   3. Last-resort fallback to /usr/bin/python3 (always present on
+    ///      modern macOS; if absent the launcher will surface a real ENOENT
+    ///      rather than the misleading literal "env python3" path)
+    private func resolveDevPython() -> String {
+        let fm = FileManager.default
+
+        if let envPython = ProcessInfo.processInfo.environment["RVC_PYTHON"],
+           !envPython.isEmpty,
+           fm.isExecutableFile(atPath: envPython) {
+            return envPython
+        }
+
+        let candidates = [
+            "/opt/homebrew/Caskroom/miniforge/base/envs/rvc/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+        ]
+        for path in candidates {
+            if fm.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return "/usr/bin/python3"
     }
 
     private func resolveUserDir() -> String {
