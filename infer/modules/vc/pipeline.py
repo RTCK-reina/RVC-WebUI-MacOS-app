@@ -127,6 +127,11 @@ class Pipeline(object):
                 score, ix = index.search(npy, k=8)
             except Exception as e:
                 raise RuntimeError("index mismatch") from e
+            # FAISS returns L2 distance squared; a perfect match yields
+            # score = 0, which would make 1/score → inf and propagate NaN
+            # through the softmax-style normalization below. Clamp to a tiny
+            # epsilon so an exact match collapses cleanly to weight ≈ 1.
+            score = np.maximum(score, 1e-10)
             weight = np.square(1 / score)
             weight /= weight.sum(axis=1, keepdims=True)
             npy = np.sum(big_npy[ix] * np.expand_dims(weight, axis=2), axis=1)

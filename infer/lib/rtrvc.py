@@ -3,8 +3,9 @@ import os
 from typing import Union, Literal, Optional
 from pathlib import Path
 
-# Must precede fairseq import — see infer/lib/torch_compat.py for rationale.
-from infer.lib import torch_compat  # noqa: F401
+# Scoped compatibility helper: relaxes torch.load's weights_only default only
+# around fairseq's HuBERT loader. See infer/lib/torch_compat.py for rationale.
+from infer.lib.torch_compat import legacy_load
 
 import fairseq
 import faiss
@@ -83,10 +84,11 @@ class RVC:
             )
         else:
             _hubert = "assets/hubert/hubert_base.pt"
-        models, _, _ = fairseq.checkpoint_utils.load_model_ensemble_and_task(
-            [_hubert],
-            suffix="",
-        )
+        with legacy_load():
+            models, _, _ = fairseq.checkpoint_utils.load_model_ensemble_and_task(
+                [_hubert],
+                suffix="",
+            )
         hubert_model = models[0]
         hubert_model = hubert_model.to(self.device)
         if self.is_half:
@@ -183,6 +185,9 @@ class RVC:
                     npy = npy.astype("float32")
                 score, ix = self.index.search(npy, k=8)
                 if (ix >= 0).all():
+                    # See pipeline.py: clamp score to avoid NaN on exact match
+                    # (score=0 → 1/score=inf → inf/inf in normalization).
+                    score = np.maximum(score, 1e-10)
                     weight = np.square(1 / score)
                     weight /= weight.sum(axis=1, keepdims=True)
                     npy = np.sum(
