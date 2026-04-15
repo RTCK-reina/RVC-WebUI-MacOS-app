@@ -246,7 +246,7 @@ class Config:
                 f.write(strr)
             logger.info("overwrite " + config_file)
         self.preprocess_per = 3.0
-        logger.info("overwrite preprocess_per to %d" % (self.preprocess_per))
+        logger.info("overwrite preprocess_per to %.1f" % (self.preprocess_per))
 
     def device_config(self):
         if torch.cuda.is_available():
