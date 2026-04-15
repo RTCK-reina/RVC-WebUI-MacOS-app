@@ -193,11 +193,18 @@ struct SingleInferenceView: View {
         isRunning = true
         defer { isRunning = false }
 
-        // Load model if different from previously loaded one.
+        // Load model if different from previously loaded one. We keep the
+        // full response so we can forward the resolved index_path to the
+        // vc_single call below — previously both `file_index` and
+        // `file_index2` were hard-coded to "" and the FAISS index was never
+        // actually consulted on the Swift path, silently wasting the
+        // "Index Rate" slider the UI exposes (A-5).
+        let indexPath: String
         do {
-            _ = try await bridge.callRaw(
+            let loadResult = try await bridge.callRaw(
                 "load_model",
                 params: .object(["sid": .string(selectedModel)]))
+            indexPath = loadResult["index_path"]?.stringValue ?? ""
         } catch {
             errorMessage = "モデルロード失敗: \(error.localizedDescription)"
             return
@@ -210,7 +217,7 @@ struct SingleInferenceView: View {
             "input_audio_path": .string(inputPath),
             "f0_up_key": .number(f0UpKey),
             "f0_method": .string(f0Method),
-            "file_index": .string(""),
+            "file_index": .string(indexPath),
             "file_index2": .string(""),
             "index_rate": .number(indexRate),
             "filter_radius": .number(filterRadius),
