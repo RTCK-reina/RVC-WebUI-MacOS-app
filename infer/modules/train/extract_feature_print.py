@@ -110,16 +110,63 @@ if len(todo) == 0:
     printt("no-feature-todo")
 else:
     printt("all-feature-%s" % len(todo))
-    for idx, file in enumerate(todo):
-        try:
-            if file.endswith(".wav"):
-                wav_path = "%s/%s" % (wavPath, file)
-                out_path = "%s/%s" % (outPath, file.replace("wav", "npy"))
 
-                if os.path.exists(out_path):
+    # D-1: the original loop read each .wav synchronously right before
+    # running HuBERT on it, so the GPU (or CPU on MPS-fallback paths) sat
+    # idle during the I/O read. The HuBERT forward pass itself is kept
+    # strictly sequential (batching across heterogeneous lengths adds
+    # padding complexity and does not always speed MPS up), but we
+    # overlap the disk read of wav N+1 with the inference of wav N using
+    # a tiny 2-worker prefetch pool. For a dataset of many short clips
+    # this is the single most effective change; for a few long clips
+    # the overhead is negligible.
+    from concurrent.futures import ThreadPoolExecutor
+    prefetch_pool = ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="feat-prefetch"
+    )
+
+    def _readwave_safe(path: str):
+        try:
+            return readwave(path, normalize=saved_cfg.task.normalize)
+        except Exception:
+            return None
+
+    # Pre-compute the list of (file, wav_path, out_path) triples that
+    # actually need work (skip already-written outputs), so the prefetch
+    # queue never fills with already-done entries.
+    work: list = []
+    for file in todo:
+        if not file.endswith(".wav"):
+            continue
+        wav_path = "%s/%s" % (wavPath, file)
+        out_path = "%s/%s" % (outPath, file.replace("wav", "npy"))
+        if os.path.exists(out_path):
+            continue
+        work.append((file, wav_path, out_path))
+
+    # Kick off the first two reads, then pipeline: while we compute item k,
+    # worker threads are already reading k+1 / k+2.
+    PREFETCH_AHEAD = 2
+    in_flight: list = []  # list[Future[tensor]]
+    for j in range(min(PREFETCH_AHEAD, len(work))):
+        _, wp, _ = work[j]
+        in_flight.append(prefetch_pool.submit(_readwave_safe, wp))
+
+    try:
+        for idx, (file, wav_path, out_path) in enumerate(work):
+            try:
+                feats = in_flight.pop(0).result()
+                # Queue up the next prefetch so we always keep PREFETCH_AHEAD
+                # reads in the pipeline.
+                next_j = idx + PREFETCH_AHEAD
+                if next_j < len(work):
+                    _, next_wp, _ = work[next_j]
+                    in_flight.append(prefetch_pool.submit(_readwave_safe, next_wp))
+
+                if feats is None:
+                    printt("%s-read-failed" % file)
                     continue
 
-                feats = readwave(wav_path, normalize=saved_cfg.task.normalize)
                 padding_mask = torch.BoolTensor(feats.shape).fill_(False)
                 inputs = {
                     "source": (
@@ -142,7 +189,9 @@ else:
                 else:
                     printt("%s-contains nan" % file)
                 if idx % n == 0:
-                    printt("now-%s,all-%s,%s,%s" % (len(todo), idx, file, feats.shape))
-        except:
-            printt(traceback.format_exc())
+                    printt("now-%s,all-%s,%s,%s" % (len(work), idx, file, feats.shape))
+            except Exception:
+                printt(traceback.format_exc())
+    finally:
+        prefetch_pool.shutdown(wait=False)
     printt("all-feature-done")
