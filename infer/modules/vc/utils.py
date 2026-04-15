@@ -1,8 +1,8 @@
 import os, pathlib
 
-# Must precede fairseq import: patches torch.load for HuBERT dictionary pickle
-# under PyTorch 2.6+ weights_only default.
-from infer.lib import torch_compat  # noqa: F401
+# Scoped compatibility helper: relaxes torch.load's weights_only default only
+# around fairseq's HuBERT loader, which still pickles a Dictionary instance.
+from infer.lib.torch_compat import legacy_load
 
 from fairseq import checkpoint_utils
 
@@ -40,10 +40,13 @@ def _hubert_path() -> str:
 
 
 def load_hubert(device, is_half):
-    models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
-        [_hubert_path()],
-        suffix="",
-    )
+    # fairseq checkpoint_utils uses torch.load internally and the HuBERT
+    # base ckpt pickles a Dictionary instance; relax weights_only just here.
+    with legacy_load():
+        models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
+            [_hubert_path()],
+            suffix="",
+        )
     hubert_model = models[0]
     hubert_model = hubert_model.to(device)
     if is_half:
