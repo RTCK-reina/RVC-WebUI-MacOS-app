@@ -1,52 +1,64 @@
-"""RVC training loop — macOS single-device edition.
-
-This file has been rewritten for macOS-only operation. Key differences from the
-upstream (CUDA/XPU) training loop:
-
-* No ``torch.distributed`` / DDP. Training is always single-process, single
-  device (MPS if available, CPU otherwise). The ``rank`` / ``n_gpus`` arguments
-  are kept at 0/1 for compatibility with the helpers in ``infer.lib.train``.
-* No Intel Extension for PyTorch and no DirectML. The ``--dml`` flag and
-  ``torch.xpu`` branches were removed.
-* fp16 / AMP is disabled. MPS fp16 support is not reliable enough for RVC, and
-  ``configs.Config.use_fp32_config()`` already flips ``fp16_run`` off for us.
-  ``torch.cuda.amp.autocast`` / ``GradScaler`` are imported only for their API
-  shape — they behave as no-ops when ``enabled=False`` on non-CUDA machines.
-* Tensors move via ``.to(device)`` against the selected backend, not
-  ``.cuda(rank)``.
-
-Training on MPS is *much* slower than on CUDA (5-20x depending on op coverage),
-but it completes without any other infrastructure.
-"""
-
-import datetime
-import logging
 import os
 import sys
-from random import shuffle
-from time import sleep
-from time import time as ttime
+import logging
 from typing import Tuple
-
-import torch
-import torch.multiprocessing as mp
-from torch.cuda.amp import GradScaler, autocast  # no-op when enabled=False
-from torch.nn import functional as F
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 
 logger = logging.getLogger(__name__)
 logging.getLogger("numba").setLevel(logging.WARNING)
 
 now_dir = os.getcwd()
 sys.path.append(os.path.join(now_dir))
+# train.py lives at infer/modules/train/train.py; walk up 3 dirs to reach the
+# package root so `from infer.lib…` resolves when rpc_training launches us
+# with cwd=user_dir (the writable logs dir).
+_pkg_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if _pkg_root not in sys.path:
+    sys.path.insert(0, _pkg_root)
+
+import datetime
 
 from infer.lib.train import utils
 
 hps = utils.get_hparams()
-# CUDA_VISIBLE_DEVICES is a no-op on macOS, but keep the env var consistent with
-# the value the caller selected so any downstream code inspecting it agrees.
-os.environ["CUDA_VISIBLE_DEVICES"] = hps.gpus.replace("-", ",")
+from random import randint, shuffle
+
+import torch
+from contextlib import nullcontext
+
+
+# macOS (MPS/CPU) has no AMP/GradScaler — fp16 training is disabled everywhere
+# in this port. These stubs preserve the call-site shape used by the training
+# loop without pulling in any CUDA-specific code paths.
+def autocast(enabled=False):
+    return nullcontext()
+
+
+class GradScaler:
+    def __init__(self, enabled=False):
+        self.enabled = enabled
+
+    def scale(self, loss):
+        return loss
+
+    def unscale_(self, optimizer):
+        pass
+
+    def step(self, optimizer):
+        return optimizer.step()
+
+    def update(self):
+        pass
+
+
+from time import sleep
+from time import time as ttime
+
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn import functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 from infer.lib.train.data_utils import (
     DistributedBucketSampler,
@@ -55,6 +67,7 @@ from infer.lib.train.data_utils import (
     TextAudioLoader,
     TextAudioLoaderMultiNSFsid,
 )
+
 from rvc.layers.discriminators import MultiPeriodDiscriminator
 
 if hps.version == "v1":
@@ -76,6 +89,7 @@ from infer.lib.train.losses import (
 )
 from infer.lib.train.mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from infer.lib.train.process_ckpt import save_small_model
+
 from rvc.layers.utils import (
     slice_on_last_dim,
     total_grad_norm,
@@ -84,60 +98,14 @@ from rvc.layers.utils import (
 global_step = 0
 
 
-def _select_device() -> torch.device:
-    """Pick the best available torch device on macOS (MPS, else CPU)."""
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+def _select_device():
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
-def _detect_perf_cores() -> int:
-    """Return the number of Apple Silicon performance cores (fallback: cpu_count/2).
-
-    On Apple Silicon, spawning a DataLoader worker per P-core keeps the pipeline
-    fed without saturating E-cores (which are useful for OS/background work).
-    """
-    import subprocess
-
-    try:
-        out = subprocess.check_output(
-            ["sysctl", "-n", "hw.perflevel0.physicalcpu"],
-            stderr=subprocess.DEVNULL,
-            timeout=1,
-        )
-        n = int(out.strip())
-        if n > 0:
-            return n
-    except Exception:
-        pass
-    # Intel Mac or non-macOS: half of logical cores, capped.
-    return max(1, (os.cpu_count() or 4) // 2)
-
-
-def _optimal_num_workers() -> int:
-    """Conservative DataLoader worker count. Capped at 6 to avoid thrash."""
-    return min(_detect_perf_cores(), 6)
-
-
-def _maybe_compile(module: torch.nn.Module, name: str) -> torch.nn.Module:
-    """Optionally wrap a module in ``torch.compile``.
-
-    Enabled only when ``RVC_USE_TORCH_COMPILE=1`` is set. MPS compile support
-    lands in PyTorch 2.3+ and is still experimental — we swallow failures and
-    return the original module so training never breaks.
-    """
-    if os.environ.get("RVC_USE_TORCH_COMPILE", "0") != "1":
-        return module
-    if not hasattr(torch, "compile"):
-        logger.warning("torch.compile unavailable (PyTorch < 2.0); skipping for %s", name)
-        return module
-    try:
-        compiled = torch.compile(module, mode="reduce-overhead", dynamic=True)
-        logger.info("torch.compile applied to %s", name)
-        return compiled
-    except Exception as e:
-        logger.warning("torch.compile failed for %s (%s); falling back to eager", name, e)
-        return module
+_TRAIN_DEVICE = _select_device()
+_IS_MPS = _TRAIN_DEVICE == "mps"
 
 
 class EpochRecorder:
@@ -154,68 +122,76 @@ class EpochRecorder:
 
 
 def main():
-    """Entry point — single process, single device on macOS."""
-    device = _select_device()
-    logger.info(
-        "macOS training entrypoint: device=%s (MPS=%s)",
-        device,
-        torch.backends.mps.is_available(),
-    )
-    # Unified Memory default: if the caller did not explicitly set this flag,
-    # cache the dataset tensors on-device. It's a ~10-30% win for MPS.
-    if not hasattr(hps, "if_cache_data_in_gpu") or hps.if_cache_data_in_gpu is None:
-        hps.if_cache_data_in_gpu = True
-        logger.info("if_cache_data_in_gpu defaulted to True (macOS Unified Memory)")
-    run_logger = utils.get_logger(hps.model_dir)
-    run(rank=0, n_gpus=1, hps=hps, logger=run_logger, device=device)
+    # macOS: always a single training process. MPS if available, CPU otherwise.
+    if not _IS_MPS:
+        print("MPS not available: falling back to CPU - this will be slow.")
+    n_gpus = 1
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = str(randint(20000, 55555))
+    children = []
+    logger = utils.get_logger(hps.model_dir)
+    for i in range(n_gpus):
+        subproc = mp.Process(
+            target=run,
+            args=(i, n_gpus, hps, logger),
+        )
+        children.append(subproc)
+        subproc.start()
+
+    for i in range(n_gpus):
+        children[i].join()
 
 
-def run(
-    rank: int,
-    n_gpus: int,
-    hps: utils.HParams,
-    logger: logging.Logger,
-    device: torch.device = None,
-):
+def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
     global global_step
-    if device is None:
-        device = _select_device()
-
     if rank == 0:
+        # logger = utils.get_logger(hps.model_dir)
         logger.info(hps)
+        # utils.check_git_hash(hps.model_dir)
         writer = SummaryWriter(log_dir=hps.model_dir)
         writer_eval = SummaryWriter(log_dir=os.path.join(hps.model_dir, "eval"))
-    else:  # pragma: no cover — macOS always uses rank 0
-        writer = writer_eval = None
 
+    try:
+        dist.init_process_group(
+            backend="gloo",
+            init_method="env://",
+            world_size=n_gpus,
+            rank=rank,
+        )
+    except:
+        dist.init_process_group(
+            backend="gloo",
+            init_method="env://?use_libuv=False",
+            world_size=n_gpus,
+            rank=rank,
+        )
     torch.manual_seed(hps.train.seed)
+    # MPS has unreliable fp16 support; CPU has none. Force fp32 so
+    # GradScaler/autocast stay no-ops regardless of the config default.
+    hps.train.fp16_run = False
 
     if hps.if_f0 == 1:
         train_dataset = TextAudioLoaderMultiNSFsid(hps.data.training_files, hps.data)
     else:
         train_dataset = TextAudioLoader(hps.data.training_files, hps.data)
-
     train_sampler = DistributedBucketSampler(
         train_dataset,
         hps.train.batch_size * n_gpus,
+        # [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200,1400],  # 16s
         [100, 200, 300, 400, 500, 600, 700, 800, 900],  # 16s
         num_replicas=n_gpus,
         rank=rank,
         shuffle=True,
     )
-
+    # It is possible that dataloader's workers are out of shared memory. Please try to raise your shared memory limit.
+    # num_workers=8 -> num_workers=4
     if hps.if_f0 == 1:
         collate_fn = TextAudioCollateMultiNSFsid()
     else:
         collate_fn = TextAudioCollate()
-
-    # pin_memory only helps when CUDA is present; disable on macOS.
-    # num_workers tracks Apple Silicon P-cores so we don't starve the E-cores.
-    num_workers = _optimal_num_workers()
-    logger.info("DataLoader num_workers=%d (Apple Silicon P-cores)", num_workers)
     train_loader = DataLoader(
         train_dataset,
-        num_workers=num_workers,
+        num_workers=4,
         shuffle=False,
         pin_memory=False,
         collate_fn=collate_fn,
@@ -223,7 +199,6 @@ def run(
         persistent_workers=True,
         prefetch_factor=8,
     )
-
     mdl = hps.copy().model
     del mdl.use_spectral_norm
     if hps.if_f0 == 1:
@@ -239,19 +214,16 @@ def run(
             hps.train.segment_size // hps.data.hop_length,
             **mdl,
         )
-    net_g = net_g.to(device)
-    net_g = _maybe_compile(net_g, "net_g")
-
-    # has_xpu is kept in the Discriminator signature for checkpoint
-    # compatibility with upstream, but on macOS it's always False.
+    if _IS_MPS:
+        net_g = net_g.to("mps")
+    has_xpu = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
     net_d = MultiPeriodDiscriminator(
         hps.version,
         use_spectral_norm=hps.model.use_spectral_norm,
-        has_xpu=False,
+        has_xpu=has_xpu,
     )
-    net_d = net_d.to(device)
-    net_d = _maybe_compile(net_d, "net_d")
-
+    if _IS_MPS:
+        net_d = net_d.to("mps")
     optim_g = torch.optim.AdamW(
         net_g.parameters(),
         hps.train.learning_rate,
@@ -264,44 +236,69 @@ def run(
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
-
-    # No DDP on macOS — operate on the raw modules.
+    # net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
+    # net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        pass
+    else:
+        net_g = DDP(net_g)
+        net_d = DDP(net_d)
 
     try:  # 如果能加载自动resume
         _, _, _, epoch_str = utils.load_checkpoint(
             utils.latest_checkpoint_path(hps.model_dir, "D_*.pth"), net_d, optim_d
-        )
+        )  # D多半加载没事
         if rank == 0:
             logger.info("loaded D")
+        # _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g,load_opt=0)
         _, _, _, epoch_str = utils.load_checkpoint(
             utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g
         )
         global_step = (epoch_str - 1) * len(train_loader)
-    except Exception:  # first run or missing checkpoint → load pretrain
+        # epoch_str = 1
+        # global_step = 0
+    except:  # 如果首次不能加载，加载pretrain
+        # traceback.print_exc()
         epoch_str = 1
         global_step = 0
         if hps.pretrainG != "":
             if rank == 0:
                 logger.info("loaded pretrained %s" % (hps.pretrainG))
-            target = net_g.module if hasattr(net_g, "module") else net_g
-            logger.info(
-                target.load_state_dict(
-                    torch.load(hps.pretrainG, map_location="cpu", weights_only=True)[
-                        "model"
-                    ]
-                )
-            )
+            if hasattr(net_g, "module"):
+                logger.info(
+                    net_g.module.load_state_dict(
+                        torch.load(
+                            hps.pretrainG, map_location="cpu", weights_only=True
+                        )["model"]
+                    )
+                )  ##测试不加载优化器
+            else:
+                logger.info(
+                    net_g.load_state_dict(
+                        torch.load(
+                            hps.pretrainG, map_location="cpu", weights_only=True
+                        )["model"]
+                    )
+                )  ##测试不加载优化器
         if hps.pretrainD != "":
             if rank == 0:
                 logger.info("loaded pretrained %s" % (hps.pretrainD))
-            target = net_d.module if hasattr(net_d, "module") else net_d
-            logger.info(
-                target.load_state_dict(
-                    torch.load(hps.pretrainD, map_location="cpu", weights_only=True)[
-                        "model"
-                    ]
+            if hasattr(net_d, "module"):
+                logger.info(
+                    net_d.module.load_state_dict(
+                        torch.load(
+                            hps.pretrainD, map_location="cpu", weights_only=True
+                        )["model"]
+                    )
                 )
-            )
+            else:
+                logger.info(
+                    net_d.load_state_dict(
+                        torch.load(
+                            hps.pretrainD, map_location="cpu", weights_only=True
+                        )["model"]
+                    )
+                )
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
         optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str - 2
@@ -310,33 +307,40 @@ def run(
         optim_d, gamma=hps.train.lr_decay, last_epoch=epoch_str - 2
     )
 
-    # fp16_run is forced off on macOS by Config.use_fp32_config(); GradScaler
-    # with enabled=False is a no-op regardless of backend.
-    scaler = GradScaler(enabled=bool(hps.train.fp16_run))
+    scaler = GradScaler(enabled=hps.train.fp16_run)
 
     cache = []
     for epoch in range(epoch_str, hps.train.epochs + 1):
-        train_and_evaluate(
-            rank,
-            epoch,
-            hps,
-            [net_g, net_d],
-            [optim_g, optim_d],
-            [scheduler_g, scheduler_d],
-            scaler,
-            [train_loader, None],
-            logger if rank == 0 else None,
-            [writer, writer_eval] if rank == 0 else None,
-            cache,
-            device,
-        )
+        if rank == 0:
+            train_and_evaluate(
+                rank,
+                epoch,
+                hps,
+                [net_g, net_d],
+                [optim_g, optim_d],
+                [scheduler_g, scheduler_d],
+                scaler,
+                [train_loader, None],
+                logger,
+                [writer, writer_eval],
+                cache,
+            )
+        else:
+            train_and_evaluate(
+                rank,
+                epoch,
+                hps,
+                [net_g, net_d],
+                [optim_g, optim_d],
+                [scheduler_g, scheduler_d],
+                scaler,
+                [train_loader, None],
+                None,
+                None,
+                cache,
+            )
         scheduler_g.step()
         scheduler_d.step()
-
-
-def _to_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
-    """Move a tensor to device. non_blocking is only useful with pinned CUDA."""
-    return tensor.to(device, non_blocking=False)
 
 
 def train_and_evaluate(
@@ -351,7 +355,6 @@ def train_and_evaluate(
     logger,
     writers,
     cache,
-    device: torch.device,
 ):
     net_g, net_d = nets
     optim_g, optim_d = optims
@@ -367,9 +370,12 @@ def train_and_evaluate(
 
     # Prepare data iterator
     if hps.if_cache_data_in_gpu == True:
+        # Use Cache
         data_iterator = cache
         if cache == []:
+            # Make new cache
             for batch_idx, info in enumerate(train_loader):
+                # Unpack
                 if hps.if_f0 == 1:
                     (
                         phone,
@@ -392,17 +398,19 @@ def train_and_evaluate(
                         wave_lengths,
                         sid,
                     ) = info
-                # Move to device (MPS or CPU)
-                phone = _to_device(phone, device)
-                phone_lengths = _to_device(phone_lengths, device)
-                if hps.if_f0 == 1:
-                    pitch = _to_device(pitch, device)
-                    pitchf = _to_device(pitchf, device)
-                sid = _to_device(sid, device)
-                spec = _to_device(spec, device)
-                spec_lengths = _to_device(spec_lengths, device)
-                wave = _to_device(wave, device)
-                wave_lengths = _to_device(wave_lengths, device)
+                # Load on MPS (or stay on CPU)
+                if _IS_MPS:
+                    phone = phone.to("mps", non_blocking=True)
+                    phone_lengths = phone_lengths.to("mps", non_blocking=True)
+                    if hps.if_f0 == 1:
+                        pitch = pitch.to("mps", non_blocking=True)
+                        pitchf = pitchf.to("mps", non_blocking=True)
+                    sid = sid.to("mps", non_blocking=True)
+                    spec = spec.to("mps", non_blocking=True)
+                    spec_lengths = spec_lengths.to("mps", non_blocking=True)
+                    wave = wave.to("mps", non_blocking=True)
+                    wave_lengths = wave_lengths.to("mps", non_blocking=True)
+                # Cache on list
                 if hps.if_f0 == 1:
                     cache.append(
                         (
@@ -436,13 +444,17 @@ def train_and_evaluate(
                         )
                     )
         else:
+            # Load shuffled cache
             shuffle(cache)
     else:
+        # Loader
         data_iterator = enumerate(train_loader)
 
     # Run steps
     epoch_recorder = EpochRecorder()
     for batch_idx, info in data_iterator:
+        # Data
+        ## Unpack
         pitch = pitchf = None
         if hps.if_f0 == 1:
             (
@@ -458,20 +470,20 @@ def train_and_evaluate(
             ) = info
         else:
             phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid = info
-
-        # Only move to device when not already cached there.
-        if hps.if_cache_data_in_gpu == False:
-            phone = _to_device(phone, device)
-            phone_lengths = _to_device(phone_lengths, device)
+        ## Load on MPS (or stay on CPU)
+        if (hps.if_cache_data_in_gpu == False) and _IS_MPS:
+            phone = phone.to("mps", non_blocking=True)
+            phone_lengths = phone_lengths.to("mps", non_blocking=True)
             if hps.if_f0 == 1:
-                pitch = _to_device(pitch, device)
-                pitchf = _to_device(pitchf, device)
-            sid = _to_device(sid, device)
-            spec = _to_device(spec, device)
-            spec_lengths = _to_device(spec_lengths, device)
-            wave = _to_device(wave, device)
+                pitch = pitch.to("mps", non_blocking=True)
+                pitchf = pitchf.to("mps", non_blocking=True)
+            sid = sid.to("mps", non_blocking=True)
+            spec = spec.to("mps", non_blocking=True)
+            spec_lengths = spec_lengths.to("mps", non_blocking=True)
+            wave = wave.to("mps", non_blocking=True)
 
-        with autocast(enabled=bool(hps.train.fp16_run)):
+        # Calculate
+        with autocast(enabled=hps.train.fp16_run):
             (
                 y_hat,
                 ids_slice,
@@ -505,7 +517,7 @@ def train_and_evaluate(
                 y_hat_mel = y_hat_mel.half()
             wave = slice_on_last_dim(
                 wave, ids_slice * hps.data.hop_length, hps.train.segment_size
-            )
+            )  # slice
 
             # Discriminator
             y_d_hat_r, y_d_hat_g, _, _ = net_d(wave, y_hat.detach())
@@ -519,7 +531,7 @@ def train_and_evaluate(
         grad_norm_d = total_grad_norm(net_d.parameters())
         scaler.step(optim_d)
 
-        with autocast(enabled=bool(hps.train.fp16_run)):
+        with autocast(enabled=hps.train.fp16_run):
             # Generator
             y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat)
             with autocast(enabled=False):
@@ -543,6 +555,7 @@ def train_and_evaluate(
                         epoch, 100.0 * batch_idx / len(train_loader)
                     )
                 )
+                # Amor For Tensorboard display
                 if loss_mel > 75:
                     loss_mel = 75
                 if loss_kl > 9:
@@ -566,6 +579,7 @@ def train_and_evaluate(
                         "loss/g/kl": loss_kl,
                     }
                 )
+
                 scalar_dict.update(
                     {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)}
                 )
@@ -593,6 +607,7 @@ def train_and_evaluate(
                     scalars=scalar_dict,
                 )
         global_step += 1
+    # /Run steps
 
     if epoch % hps.save_every_epoch == 0 and rank == 0:
         if hps.if_latest == 0:
@@ -626,8 +641,10 @@ def train_and_evaluate(
                 os.path.join(hps.model_dir, "D_latest.pth"),
             )
         if rank == 0 and hps.save_every_weights == "1":
-            ckpt_src = net_g.module if hasattr(net_g, "module") else net_g
-            ckpt = ckpt_src.state_dict()
+            if hasattr(net_g, "module"):
+                ckpt = net_g.module.state_dict()
+            else:
+                ckpt = net_g.state_dict()
             logger.info(
                 "saving ckpt %s_e%s:%s"
                 % (
@@ -650,8 +667,10 @@ def train_and_evaluate(
     if epoch >= hps.total_epoch and rank == 0:
         logger.info("Training is done. The program is closed.")
 
-        ckpt_src = net_g.module if hasattr(net_g, "module") else net_g
-        ckpt = ckpt_src.state_dict()
+        if hasattr(net_g, "module"):
+            ckpt = net_g.module.state_dict()
+        else:
+            ckpt = net_g.state_dict()
         logger.info(
             "saving final ckpt:%s"
             % (
@@ -665,11 +684,5 @@ def train_and_evaluate(
 
 
 if __name__ == "__main__":
-    # macOS requires 'spawn' to avoid fork-safety issues with PyTorch + DataLoader
-    # workers. Call it defensively even though we no longer spawn child processes
-    # for DDP — the DataLoader workers still benefit.
-    try:
-        mp.set_start_method("spawn", force=True)
-    except RuntimeError:
-        pass
+    mp.set_start_method("spawn", force=True)
     main()

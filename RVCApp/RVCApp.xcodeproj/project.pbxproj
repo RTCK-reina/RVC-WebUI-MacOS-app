@@ -1,0 +1,431 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		03C9C61765D448674196E32E /* TrainingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0D5BFA2A4869A13A49887D1 /* TrainingView.swift */; };
+		1117B7784F8BDED84F8D8457 /* BatchInferenceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 194ED43F08E7547E95A3C320 /* BatchInferenceView.swift */; };
+		234519F80077D8D152B4E5C6 /* TaskProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3FC1385F99E7AEB33F617F /* TaskProgress.swift */; };
+		2A5A9050EC560DC73ACD7959 /* RealtimeVCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41752C4D63E4AA1801F684F4 /* RealtimeVCView.swift */; };
+		6987F297E333C6E2133DE34D /* AudioPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 363811336D7F8CF49189E52C /* AudioPlayerView.swift */; };
+		6E6768A2AE9A0802EADD26E4 /* SingleInferenceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37915BFC83F4D65835252BC1 /* SingleInferenceView.swift */; };
+		7136F7D58AD3C31A1C12D8C1 /* PythonBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBB279F4BCC24F27D2A7B06 /* PythonBridge.swift */; };
+		82C6D4CD291EB2CFC699F357 /* ModelManagementViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCEE60658A43D30AFB5F6A3F /* ModelManagementViews.swift */; };
+		928CB3F63015099B2A01726E /* SeparationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5634D8BD2D551688EFFC22DC /* SeparationView.swift */; };
+		9CAA86D285586C9A458CB8A9 /* ResourceStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B2801DCF94E3DF8293C83A /* ResourceStats.swift */; };
+		A8E3A409D2CE8660F8C9F04F /* RVCAppMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E2425BDC2A1B3DC14206824 /* RVCAppMain.swift */; };
+		B94E037462ACDCC318FE3825 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E71BECE5858BFE921FF3E19F /* ContentView.swift */; };
+		C7A1D64131167F1C23B66A82 /* JSONRPCModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D868D1FD6FF655167A4D3411 /* JSONRPCModels.swift */; };
+		D2CA73E806D849B2C6C3174F /* StatusBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 024A7908982D47AC86996809 /* StatusBarView.swift */; };
+		E71F4866D1B200EBDA757261 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DCAFCB1E2BBF2A215B3C2EB /* AppState.swift */; };
+		F46E970915C17F16998A5C12 /* FilePickerField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 614864FDD09566BD41146B79 /* FilePickerField.swift */; };
+		FA5E46CED38CAFEE953604FF /* ProgressBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27005ECB67927E719605B20 /* ProgressBarView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		024A7908982D47AC86996809 /* StatusBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarView.swift; sourceTree = "<group>"; };
+		0DBB279F4BCC24F27D2A7B06 /* PythonBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PythonBridge.swift; sourceTree = "<group>"; };
+		194ED43F08E7547E95A3C320 /* BatchInferenceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchInferenceView.swift; sourceTree = "<group>"; };
+		363811336D7F8CF49189E52C /* AudioPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayerView.swift; sourceTree = "<group>"; };
+		37915BFC83F4D65835252BC1 /* SingleInferenceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SingleInferenceView.swift; sourceTree = "<group>"; };
+		3E2425BDC2A1B3DC14206824 /* RVCAppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RVCAppMain.swift; sourceTree = "<group>"; };
+		41752C4D63E4AA1801F684F4 /* RealtimeVCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVCView.swift; sourceTree = "<group>"; };
+		5634D8BD2D551688EFFC22DC /* SeparationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeparationView.swift; sourceTree = "<group>"; };
+		614864FDD09566BD41146B79 /* FilePickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePickerField.swift; sourceTree = "<group>"; };
+		6A760FD509DD6FF4294F769F /* RVCApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RVCApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		85B2801DCF94E3DF8293C83A /* ResourceStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceStats.swift; sourceTree = "<group>"; };
+		8DCAFCB1E2BBF2A215B3C2EB /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		A27005ECB67927E719605B20 /* ProgressBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressBarView.swift; sourceTree = "<group>"; };
+		AE3FC1385F99E7AEB33F617F /* TaskProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskProgress.swift; sourceTree = "<group>"; };
+		CCEE60658A43D30AFB5F6A3F /* ModelManagementViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManagementViews.swift; sourceTree = "<group>"; };
+		D868D1FD6FF655167A4D3411 /* JSONRPCModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONRPCModels.swift; sourceTree = "<group>"; };
+		E71BECE5858BFE921FF3E19F /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		F0D5BFA2A4869A13A49887D1 /* TrainingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		1B75546470EDD7CFC7B999C1 /* Training */ = {
+			isa = PBXGroup;
+			children = (
+				F0D5BFA2A4869A13A49887D1 /* TrainingView.swift */,
+			);
+			path = Training;
+			sourceTree = "<group>";
+		};
+		370F3C8671E4D8786676C2C0 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				E71BECE5858BFE921FF3E19F /* ContentView.swift */,
+				024A7908982D47AC86996809 /* StatusBarView.swift */,
+				D93DFFBDF4E826563C9E3522 /* Components */,
+				8EE97A3C0DB2B4D6E4CB3912 /* Inference */,
+				4308DCF192AF8A310D830634 /* Models */,
+				E589D6FE78132CD176BD99B8 /* Realtime */,
+				42E59B6B35E9CFD44B9458D9 /* Separation */,
+				1B75546470EDD7CFC7B999C1 /* Training */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		42E59B6B35E9CFD44B9458D9 /* Separation */ = {
+			isa = PBXGroup;
+			children = (
+				5634D8BD2D551688EFFC22DC /* SeparationView.swift */,
+			);
+			path = Separation;
+			sourceTree = "<group>";
+		};
+		4308DCF192AF8A310D830634 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				CCEE60658A43D30AFB5F6A3F /* ModelManagementViews.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		4F914E2AFA8A3EA660879CA9 /* RVCApp */ = {
+			isa = PBXGroup;
+			children = (
+				3E2425BDC2A1B3DC14206824 /* RVCAppMain.swift */,
+				F9D4BC0125D4C145B47A6AE2 /* Bridge */,
+				DFDFEC52EA14043ED739DBB4 /* Models */,
+				370F3C8671E4D8786676C2C0 /* Views */,
+			);
+			path = RVCApp;
+			sourceTree = "<group>";
+		};
+		8EE97A3C0DB2B4D6E4CB3912 /* Inference */ = {
+			isa = PBXGroup;
+			children = (
+				194ED43F08E7547E95A3C320 /* BatchInferenceView.swift */,
+				37915BFC83F4D65835252BC1 /* SingleInferenceView.swift */,
+			);
+			path = Inference;
+			sourceTree = "<group>";
+		};
+		C206BC7BD85BBB7076B5D85F = {
+			isa = PBXGroup;
+			children = (
+				4F914E2AFA8A3EA660879CA9 /* RVCApp */,
+				E854ADCA87B139D525447D8B /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D93DFFBDF4E826563C9E3522 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				363811336D7F8CF49189E52C /* AudioPlayerView.swift */,
+				614864FDD09566BD41146B79 /* FilePickerField.swift */,
+				A27005ECB67927E719605B20 /* ProgressBarView.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		DFDFEC52EA14043ED739DBB4 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				8DCAFCB1E2BBF2A215B3C2EB /* AppState.swift */,
+				D868D1FD6FF655167A4D3411 /* JSONRPCModels.swift */,
+				85B2801DCF94E3DF8293C83A /* ResourceStats.swift */,
+				AE3FC1385F99E7AEB33F617F /* TaskProgress.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		E589D6FE78132CD176BD99B8 /* Realtime */ = {
+			isa = PBXGroup;
+			children = (
+				41752C4D63E4AA1801F684F4 /* RealtimeVCView.swift */,
+			);
+			path = Realtime;
+			sourceTree = "<group>";
+		};
+		E854ADCA87B139D525447D8B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				6A760FD509DD6FF4294F769F /* RVCApp.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		F9D4BC0125D4C145B47A6AE2 /* Bridge */ = {
+			isa = PBXGroup;
+			children = (
+				0DBB279F4BCC24F27D2A7B06 /* PythonBridge.swift */,
+			);
+			path = Bridge;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C451885E2AEA34350C0255AA /* RVCApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D2BFF91D4769DD79DE9B5230 /* Build configuration list for PBXNativeTarget "RVCApp" */;
+			buildPhases = (
+				7EA6C5F70FDD1AE668AD2F2F /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RVCApp;
+			packageProductDependencies = (
+			);
+			productName = RVCApp;
+			productReference = 6A760FD509DD6FF4294F769F /* RVCApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		3BDEDEEB9A3AE56ED9B18276 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					C451885E2AEA34350C0255AA = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 318E0D1282D4AB69533D568E /* Build configuration list for PBXProject "RVCApp" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = C206BC7BD85BBB7076B5D85F;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E854ADCA87B139D525447D8B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C451885E2AEA34350C0255AA /* RVCApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		7EA6C5F70FDD1AE668AD2F2F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E71F4866D1B200EBDA757261 /* AppState.swift in Sources */,
+				6987F297E333C6E2133DE34D /* AudioPlayerView.swift in Sources */,
+				1117B7784F8BDED84F8D8457 /* BatchInferenceView.swift in Sources */,
+				B94E037462ACDCC318FE3825 /* ContentView.swift in Sources */,
+				F46E970915C17F16998A5C12 /* FilePickerField.swift in Sources */,
+				C7A1D64131167F1C23B66A82 /* JSONRPCModels.swift in Sources */,
+				82C6D4CD291EB2CFC699F357 /* ModelManagementViews.swift in Sources */,
+				FA5E46CED38CAFEE953604FF /* ProgressBarView.swift in Sources */,
+				7136F7D58AD3C31A1C12D8C1 /* PythonBridge.swift in Sources */,
+				A8E3A409D2CE8660F8C9F04F /* RVCAppMain.swift in Sources */,
+				2A5A9050EC560DC73ACD7959 /* RealtimeVCView.swift in Sources */,
+				9CAA86D285586C9A458CB8A9 /* ResourceStats.swift in Sources */,
+				928CB3F63015099B2A01726E /* SeparationView.swift in Sources */,
+				6E6768A2AE9A0802EADD26E4 /* SingleInferenceView.swift in Sources */,
+				D2CA73E806D849B2C6C3174F /* StatusBarView.swift in Sources */,
+				234519F80077D8D152B4E5C6 /* TaskProgress.swift in Sources */,
+				03C9C61765D448674196E32E /* TrainingView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0F600AF1047BE597F8D11ED3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_ENTITLEMENTS = RVCApp/RVCApp.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_FILE = RVCApp/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = app.rvc.webui;
+				PRODUCT_NAME = "RVC-WebUI";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		77B2CAB646BB4B5E19308BAB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = RVCApp/RVCApp.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = RVCApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.rvc.webui;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		9A3C8A14325CDF889CC4C1E2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_ENTITLEMENTS = RVCApp/RVCApp.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				INFOPLIST_FILE = RVCApp/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = app.rvc.webui;
+				PRODUCT_NAME = "RVC-WebUI";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		F6FF1279BB14C70819D7EFCE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = RVCApp/RVCApp.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = RVCApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.rvc.webui;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		318E0D1282D4AB69533D568E /* Build configuration list for PBXProject "RVCApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9A3C8A14325CDF889CC4C1E2 /* Debug */,
+				0F600AF1047BE597F8D11ED3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D2BFF91D4769DD79DE9B5230 /* Build configuration list for PBXNativeTarget "RVCApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F6FF1279BB14C70819D7EFCE /* Debug */,
+				77B2CAB646BB4B5E19308BAB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 3BDEDEEB9A3AE56ED9B18276 /* Project object */;
+}

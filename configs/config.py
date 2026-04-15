@@ -1,19 +1,15 @@
-"""Runtime configuration for the macOS-focused RVC build.
-
-This file is deliberately slim: only MPS (Apple Silicon) and CPU backends are
-supported. All CUDA, XPU (Intel Arc), and DirectML code paths from the upstream
-project have been removed because they cannot run on macOS.
-"""
-
 import argparse
-import json
-import logging
 import os
-import shutil
 import sys
+import json
+import shutil
 from multiprocessing import cpu_count
+from pathlib import Path
 
 import torch
+
+# TODO: move device selection into rvc
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +33,87 @@ def singleton_variable(func):
     return wrapper
 
 
+def _default_base_dir() -> Path:
+    """Resolve the bundle base dir.
+
+    Priority:
+      1. RVC_BASE_DIR env var (set by the .app launcher to .../Contents/Resources)
+      2. Current working directory (development / legacy behavior)
+    """
+    env = os.environ.get("RVC_BASE_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
+    return Path(os.getcwd()).resolve()
+
+
+def _default_user_dir() -> Path:
+    """Resolve the user data dir under ~/Documents/RVC-WebUI by default.
+
+    Priority:
+      1. RVC_USER_DIR env var
+      2. ~/Documents/RVC-WebUI (the .app convention)
+      3. Current working directory (legacy)
+    """
+    env = os.environ.get("RVC_USER_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
+    home = Path.home()
+    documents = home / "Documents"
+    if documents.is_dir():
+        return (documents / "RVC-WebUI").resolve()
+    return Path(os.getcwd()).resolve()
+
+
+def ensure_user_layout(user_dir: Path) -> None:
+    """Create the user data directory tree (idempotent)."""
+    subdirs = [
+        "input/audio",
+        "input/training",
+        "output/inference",
+        "output/batch",
+        "output/separation/vocals",
+        "output/separation/accompaniment",
+        "output/onnx",
+        "models",
+        "indices",
+        "logs",
+        "configs/inuse/v1",
+        "configs/inuse/v2",
+        "temp",
+    ]
+    for sd in subdirs:
+        (user_dir / sd).mkdir(parents=True, exist_ok=True)
+
+
+def _populate_env_paths(base_dir: Path, user_dir: Path) -> None:
+    """Populate os.environ with the paths used across the codebase.
+
+    This replaces the .env-driven configuration so that the RPC server and the
+    subprocesses it spawns (training/feature extraction) agree on where to read
+    and write files, without any relative-cwd dependency.
+    """
+    os.environ.setdefault("weight_root", str(user_dir / "models"))
+    os.environ.setdefault("weight_uvr5_root", str(base_dir / "assets" / "uvr5_weights"))
+    os.environ.setdefault("index_root", str(user_dir / "logs"))
+    os.environ.setdefault("outside_index_root", str(user_dir / "indices"))
+    os.environ.setdefault("rmvpe_root", str(base_dir / "assets" / "rmvpe"))
+    # Newly exposed knobs — consumed by rpc_server.py output logic.
+    os.environ.setdefault("output_root", str(user_dir / "output"))
+    os.environ.setdefault("input_root", str(user_dir / "input"))
+    os.environ.setdefault("TEMP", str(user_dir / "temp"))
+
+
 @singleton_variable
 class Config:
-    def __init__(self):
-        # macOS does not support CUDA; MPS if available, CPU otherwise.
-        self.device = "cpu"
-        self.is_half = False  # MPS forces fp32 on Apple Silicon
+    def __init__(self, base_dir=None, user_dir=None):
+        # Resolve dirs first so that load_config_json / path helpers can use them.
+        self.base_dir: Path = Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
+        self.user_dir: Path = Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        ensure_user_layout(self.user_dir)
+        _populate_env_paths(self.base_dir, self.user_dir)
+
+        self.device = "cuda:0"
+        self.is_half = True
         self.use_jit = False
         self.n_cpu = 0
         self.gpu_name = None
@@ -54,6 +125,7 @@ class Config:
             self.global_link,
             self.noparallel,
             self.noautoopen,
+            self.dml,
             self.nocheck,
             self.update,
         ) = self.arg_parse()
@@ -61,25 +133,49 @@ class Config:
         self.preprocess_per = 3.7
         self.x_pad, self.x_query, self.x_center, self.x_max = self.device_config()
 
-    @staticmethod
-    def load_config_json() -> dict:
+    def asset_path(self, *parts) -> Path:
+        return self.base_dir.joinpath(*parts)
+
+    def user_path(self, *parts) -> Path:
+        return self.user_dir.joinpath(*parts)
+
+    def load_config_json(self) -> dict:
+        """Load the per-SR training JSON configs.
+
+        Templates live inside the bundle (base_dir/configs/*.json). The editable
+        copies live under user_dir/configs/inuse/*.json so the app can freely
+        write to them.
+        """
         d = {}
+        inuse_root = self.user_dir / "configs" / "inuse"
+        src_root = self.base_dir / "configs"
+        inuse_root.mkdir(parents=True, exist_ok=True)
         for config_file in version_config_list:
-            p = f"configs/inuse/{config_file}"
-            if not os.path.exists(p):
-                shutil.copy(f"configs/{config_file}", p)
-            with open(f"configs/inuse/{config_file}", "r") as f:
+            dst = inuse_root / config_file
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if not dst.exists():
+                src = src_root / config_file
+                if src.exists():
+                    shutil.copy(src, dst)
+            with open(dst, "r") as f:
                 d[config_file] = json.load(f)
         return d
 
     @staticmethod
     def arg_parse() -> tuple:
+        """Parse command line args.
+
+        Compatible with the legacy web.py / gui.py entrypoints but now used by
+        rpc_server.py as well. Web-specific flags are preserved only so that
+        launching via the old scripts still works; the .app launcher never sets
+        them.
+        """
         exe = sys.executable or "python"
         parser = argparse.ArgumentParser()
-        parser.add_argument("--port", type=int, default=7865, help="Listen port")
+        parser.add_argument("--port", type=int, default=7865, help="Listen port (legacy web.py)")
         parser.add_argument("--pycmd", type=str, default=exe, help="Python command")
         parser.add_argument(
-            "--global_link", action="store_true", help="Generate a global proxy link"
+            "--global_link", action="store_true", help="Generate a global proxy link (legacy web.py)"
         )
         parser.add_argument(
             "--noparallel", action="store_true", help="Disable parallel processing"
@@ -87,7 +183,12 @@ class Config:
         parser.add_argument(
             "--noautoopen",
             action="store_true",
-            help="Do not open in browser automatically",
+            help="Do not open in browser automatically (legacy web.py)",
+        )
+        parser.add_argument(
+            "--dml",
+            action="store_true",
+            help="torch_dml",
         )
         parser.add_argument(
             "--nocheck", action="store_true", help="Run without checking assets"
@@ -95,7 +196,10 @@ class Config:
         parser.add_argument(
             "--update", action="store_true", help="Update to latest assets"
         )
-        cmd_opts = parser.parse_args()
+        # Known but ignored here (rpc_server.py parses these before Config()):
+        parser.add_argument("--base-dir", type=str, default=None, help=argparse.SUPPRESS)
+        parser.add_argument("--user-dir", type=str, default=None, help=argparse.SUPPRESS)
+        cmd_opts, _unknown = parser.parse_known_args()
 
         cmd_opts.port = cmd_opts.port if 0 <= cmd_opts.port <= 65535 else 7865
 
@@ -105,11 +209,12 @@ class Config:
             cmd_opts.global_link,
             cmd_opts.noparallel,
             cmd_opts.noautoopen,
+            cmd_opts.dml,
             cmd_opts.nocheck,
             cmd_opts.update,
         )
 
-    # has_mps is only available in nightly pytorch (for now) and macOS 12.3+.
+    # has_mps is only available in nightly pytorch (for now) and MasOS 12.3+.
     # check `getattr` and try it for compatibility
     @staticmethod
     def has_mps() -> bool:
@@ -121,36 +226,98 @@ class Config:
         except Exception:
             return False
 
+    @staticmethod
+    def has_xpu() -> bool:
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return True
+        else:
+            return False
+
     def use_fp32_config(self):
+        inuse_root = self.user_dir / "configs" / "inuse"
         for config_file in version_config_list:
             self.json_config[config_file]["train"]["fp16_run"] = False
-            inuse_path = f"configs/inuse/{config_file}"
-            with open(inuse_path, "r") as f:
-                data = json.load(f)
-            if data.get("train", {}).get("fp16_run") is not False:
-                data.setdefault("train", {})["fp16_run"] = False
-                with open(inuse_path, "w") as f:
-                    json.dump(data, f, indent=2)
-                logger.info("overwrite " + config_file)
+            target = inuse_root / config_file
+            if not target.exists():
+                continue
+            with open(target, "r") as f:
+                strr = f.read().replace("true", "false")
+            with open(target, "w") as f:
+                f.write(strr)
+            logger.info("overwrite " + config_file)
         self.preprocess_per = 3.0
         logger.info("overwrite preprocess_per to %.1f" % (self.preprocess_per))
 
     def device_config(self):
-        if self.has_mps():
-            logger.info("Using Apple Silicon MPS backend (fp32 forced)")
+        if torch.cuda.is_available():
+            if self.has_xpu():
+                self.device = self.instead = "xpu:0"
+                self.is_half = True
+            i_device = int(self.device.split(":")[-1])
+            self.gpu_name = torch.cuda.get_device_name(i_device)
+            if (
+                ("16" in self.gpu_name and "V100" not in self.gpu_name.upper())
+                or "P40" in self.gpu_name.upper()
+                or "P10" in self.gpu_name.upper()
+                or "1060" in self.gpu_name
+                or "1070" in self.gpu_name
+                or "1080" in self.gpu_name
+            ):
+                logger.info("Found GPU %s, force to fp32", self.gpu_name)
+                self.is_half = False
+                self.use_fp32_config()
+            else:
+                logger.info("Found GPU %s", self.gpu_name)
+            self.gpu_mem = int(
+                torch.cuda.get_device_properties(i_device).total_memory
+                / 1024
+                / 1024
+                / 1024
+                + 0.4
+            )
+            if self.gpu_mem <= 4:
+                self.preprocess_per = 3.0
+        elif self.has_mps():
+            logger.info("No supported Nvidia GPU found")
             self.device = self.instead = "mps"
+            self.is_half = False
+            self.use_fp32_config()
         else:
-            logger.info("No GPU acceleration available; falling back to CPU")
+            logger.info("No supported Nvidia GPU found")
             self.device = self.instead = "cpu"
-        self.is_half = False
-        self.use_fp32_config()
+            self.is_half = False
+            self.use_fp32_config()
 
         if self.n_cpu == 0:
             self.n_cpu = cpu_count()
 
-        # fp32 path → upstream "5G" profile
-        x_pad, x_query, x_center, x_max = 1, 6, 38, 41
+        if self.is_half:
+            # 6G显存配置
+            x_pad = 3
+            x_query = 10
+            x_center = 60
+            x_max = 65
+        else:
+            # 5G显存配置
+            x_pad = 1
+            x_query = 6
+            x_center = 38
+            x_max = 41
 
+        if self.gpu_mem is not None and self.gpu_mem <= 4:
+            x_pad = 1
+            x_query = 5
+            x_center = 30
+            x_max = 32
+        if self.dml:
+            logger.info("Use DirectML instead")
+            import torch_directml
+
+            self.device = torch_directml.device(torch_directml.default_device())
+            self.is_half = False
+        else:
+            if self.instead:
+                logger.info(f"Use {self.instead} instead")
         logger.info(
             "Half-precision floating-point: %s, device: %s"
             % (self.is_half, self.device)
@@ -160,7 +327,12 @@ class Config:
 
 @singleton_variable
 class CPUConfig:
-    def __init__(self):
+    def __init__(self, base_dir=None, user_dir=None):
+        self.base_dir: Path = Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
+        self.user_dir: Path = Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        ensure_user_layout(self.user_dir)
+        _populate_env_paths(self.base_dir, self.user_dir)
+
         self.device = "cpu"
         self.is_half = False
         self.use_jit = False
@@ -172,11 +344,11 @@ class CPUConfig:
         self.preprocess_per = 3.7
         self.x_pad, self.x_query, self.x_center, self.x_max = self.device_config()
 
-    @staticmethod
-    def load_config_json() -> dict:
+    def load_config_json(self) -> dict:
         d = {}
         for config_file in version_config_list:
-            with open(f"configs/{config_file}", "r") as f:
+            path = self.base_dir / "configs" / config_file
+            with open(path, "r") as f:
                 d[config_file] = json.load(f)
         return d
 
@@ -191,5 +363,10 @@ class CPUConfig:
         if self.n_cpu == 0:
             self.n_cpu = cpu_count()
 
-        x_pad, x_query, x_center, x_max = 1, 6, 38, 41
+        # 5G显存配置
+        x_pad = 1
+        x_query = 6
+        x_center = 38
+        x_max = 41
+
         return x_pad, x_query, x_center, x_max

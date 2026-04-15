@@ -1,221 +1,185 @@
 <div align="center">
 
-<h1>Retrieval-based-Voice-Conversion-WebUI</h1>
-An easy-to-use Voice Conversion framework based on VITS.<br><br>
+# RVC-WebUI-MacOS
 
-[![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=orange
-)](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
+**A native macOS `.app` of Retrieval-based Voice Conversion.**
+SwiftUI frontend + bundled Python backend. No browser, no network, no pip install.
 
-<img src="https://counter.seku.su/cmoe?name=rvc&theme=r34" /><br>
-  
-[![Open In Colab](https://img.shields.io/badge/Colab-F9AB00?style=for-the-badge&logo=googlecolab&color=525252)](https://colab.research.google.com/github/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/blob/main/Retrieval_based_Voice_Conversion_WebUI.ipynb)
-[![Licence](https://img.shields.io/github/license/RVC-Project/Retrieval-based-Voice-Conversion-WebUI?style=for-the-badge)](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/blob/main/LICENSE)
-[![Huggingface](https://img.shields.io/badge/🤗%20-Spaces-yellow.svg?style=for-the-badge)](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/)
+[![macOS](https://img.shields.io/badge/macOS-12.0%2B-black?style=for-the-badge&logo=apple)](https://www.apple.com/macos/)
+[![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-MPS-0071c5?style=for-the-badge)](https://developer.apple.com/metal/pytorch/)
+[![Licence](https://img.shields.io/github/license/RTCKPRO/RVC-WebUI-MacOS?style=for-the-badge)](../../LICENSE)
 
-[![Discord](https://img.shields.io/badge/RVC%20Developers-Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/HcsmBBGyVk)
-
-[**Changelog**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/blob/main/docs/Changelog_EN.md) | [**FAQ (Frequently Asked Questions)**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/wiki/FAQ-(Frequently-Asked-Questions)) 
-
-[**English**](../en/README.en.md) | [**中文简体**](../../README.md) | [**日本語**](../jp/README.ja.md) | [**한국어**](../kr/README.ko.md) ([**韓國語**](../kr/README.ko.han.md)) | [**Français**](../fr/README.fr.md) | [**Türkçe**](../tr/README.tr.md) | [**Português**](../pt/README.pt.md)
+[**English**](../../README.md) · [**日本語**](../jp/README.ja.md) · [**中文简体**](../cn/README.cn.md) · [**한국어**](../kr/README.ko.md) · [**Français**](../fr/README.fr.md) · [**Português**](../pt/README.pt.md) · [**Türkçe**](../tr/README.tr.md)
 
 </div>
 
-> Check out our [Demo Video](https://www.bilibili.com/video/BV1pm4y1z7Gm/) here!
+---
 
-<table>
-   <tr>
-		<td align="center">Training and inference Webui</td>
-		<td align="center">Real-time voice changing GUI</td>
-	</tr>
-  <tr>
-		<td align="center"><img src="https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/assets/129054828/092e5c12-0d49-4168-a590-0b0ef6a4f630"></td>
-    <td align="center"><img src="https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/assets/129054828/730b4114-8805-44a1-ab1a-04668f3c30a6"></td>
-	</tr>
-	<tr>
-		<td align="center">go-web.bat</td>
-		<td align="center">go-realtime-gui.bat</td>
-	</tr>
-  <tr>
-    <td align="center">You can freely choose the action you want to perform.</td>
-		<td align="center">We have achieved an end-to-end latency of 170ms. With the use of ASIO input and output devices, we have managed to achieve an end-to-end latency of 90ms, but it is highly dependent on hardware driver support.</td>
-	</tr>
-</table>
+## What is this
 
-> The dataset for the pre-training model uses nearly 50 hours of high quality audio from the VCTK open source dataset.
+RVC-WebUI-MacOS repackages the [Retrieval-based Voice Conversion WebUI](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI) as a **single standalone `.app`** for Apple Silicon. Everything — PyTorch, fairseq, all pretrained models (HuBERT, RMVPE, UVR5, pretrained_v2) — ships inside the bundle. First launch is a double-click; no conda, no pip, no Homebrew, no localhost URL, no internet required after download.
 
-> High quality licensed song datasets will be added to the training-set often for your use, without having to worry about copyright infringement.
+The original project uses Gradio in a browser and FreeSimpleGUI for the realtime VC window. This fork replaces both with a **SwiftUI frontend** that talks to a **subprocess Python backend** over JSON-RPC on stdin/stdout.
 
-> Please look forward to the pretrained base model of RVCv3, which has larger parameters, more training data, better results, unchanged inference speed, and requires less training data for training.
+## Features
 
-## Features:
-+ Reduce tone leakage by replacing the source feature to training-set feature using top1 retrieval;
-+ Easy + fast training, even on poor graphics cards;
-+ Training with a small amounts of data (>=10min low noise speech recommended);
-+ Model fusion to change timbres (using ckpt processing tab->ckpt merge);
-+ Easy-to-use WebUI;
-+ UVR5 model to quickly separate vocals and instruments;
-+ High-pitch Voice Extraction Algorithm [InterSpeech2023-RMVPE](#Credits) to prevent a muted sound problem. Provides the best results (significantly) and is faster with lower resource consumption than Crepe_full;
-+ AMD/Intel graphics cards acceleration supported;
-+ Intel ARC graphics cards acceleration with IPEX supported.
+- **Fully offline** — all ML weights are inside the bundle. No asset download step, no HuggingFace fetch.
+- **Apple Silicon first** — PyTorch MPS backend out of the box. Correctly falls back to CPU when MPS can't handle an op.
+- **Always-on resource monitor** — CPU / unified-memory / MPS usage in the toolbar, refreshed every second.
+- **Honest progress bars** — per-task percent, phase label, ETA. Cancel buttons only appear where the operation is actually interruptible.
+- **All RVC features in one app**:
+  - Single-file and batch inference
+  - UVR5 vocal / instrumental separation with model-chooser guide (which HP/DeEcho/DeReverb to pick, and why)
+  - Optional auto-polish chain (second-pass DeReverb) after vocal extraction
+  - Full training pipeline: preprocess → F0 / feature extract → train → index
+  - Model management: compare, merge, extract (slim), info edit
+  - ONNX export
+  - Realtime voice changer with device picker + hot parameter updates
+- **Human-readable layout** — every user file lives under `~/Documents/RVC-WebUI/`, nothing scattered across hidden application-support folders.
+- **Defaults that don't degrade audio** — output is FLAC (lossless); WAV / MP3 / M4A still available.
 
-## Preparing the environment
-The following commands need to be executed with Python 3.8 or higher.
+## System requirements
 
-(Windows/Linux)
-First install the main dependencies through pip:
-```bash
-# Install PyTorch-related core dependencies, skip if installed
-# Reference: https://pytorch.org/get-started/locally/
-pip install torch torchvision torchaudio
+| | Minimum | Recommended |
+|---|---|---|
+| macOS | 12.0 Monterey | 14.0 Sonoma or later |
+| CPU | Apple Silicon (M1) | M2 Pro / M3 Pro or better |
+| RAM | 8 GB | 16 GB+ (training is memory hungry) |
+| Disk | 8 GB free | 20 GB+ if training |
 
-#For Windows + Nvidia Ampere Architecture(RTX30xx), you need to specify the cuda version corresponding to pytorch according to the experience of https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/issues/21
-#pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu117
+Intel Macs are **not supported** — the bundled PyTorch is ARM64-only.
 
-#For Linux + AMD Cards, you need to use the following pytorch versions:
-#pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
-```
+## Installation
 
-Then can use poetry to install the other dependencies:
-```bash
-# Install the Poetry dependency management tool, skip if installed
-# Reference: https://python-poetry.org/docs/#installation
-curl -sSL https://install.python-poetry.org | python3 -
+### For end users
 
-# Install the project dependencies
-poetry install
-```
+1. Download `RVC-WebUI.app.zip` from the latest [Release](https://github.com/RTCKPRO/RVC-WebUI-MacOS/releases).
+2. Unzip, drag `RVC-WebUI.app` into `/Applications`.
+3. Double-click to launch. On first run, Gatekeeper may ask you to confirm — right-click the app → **Open** → **Open** in the dialog.
 
-You can also use pip to install them:
-```bash
+On first launch the app creates `~/Documents/RVC-WebUI/` and subdirectories for your inputs, outputs, models, and logs. That's the only place it writes.
 
-for Nvidia graphics cards
-  pip install -r requirements.txt
-
-for AMD/Intel graphics cards on Windows (DirectML)：
-  pip install -r requirements-dml.txt
-
-for Intel ARC graphics cards on Linux / WSL using Python 3.10: 
-  pip install -r requirements-ipex.txt
-
-for AMD graphics cards on Linux (ROCm):
-  pip install -r requirements-amd.txt
-```
-
-------
-Mac users can install dependencies via `run.sh`:
-```bash
-sh ./run.sh
-```
-
-## Preparation of other Pre-models
-RVC requires other pre-models to infer and train.
+### For developers / building from source
 
 ```bash
-#Download all needed models from https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/
-python tools/download_models.py
+# Prereqs: Homebrew, Xcode CLT, Miniforge/conda
+brew install xcodegen conda-pack
+
+# 1. Clone
+git clone https://github.com/RTCKPRO/RVC-WebUI-MacOS.git
+cd RVC-WebUI-MacOS
+
+# 2. Create the conda env (Python 3.10 + PyTorch MPS + fairseq etc.)
+./setup_conda_env.sh
+conda activate rvc
+
+# 3. (Optional) Smoke-test the Python backend standalone
+python tools/test_rpc.py
+# expect: "ready" notification → initialize response → resource_stats every second
+
+# 4. Build the full .app bundle
+./build_app.sh
+# Produces: build/RVC-WebUI.app  (about 4 GB including PyTorch and all models)
 ```
 
-Or just download them by yourself from our [Huggingface space](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/).
+Build flags:
 
-Here's a list of Pre-models and other files that RVC needs:
+- `--skip-conda` — reuse previously packed Python env (`build/python_env/`)
+- `--skip-xcode` — reuse previously built Swift binary
+- `--skip-sign` — skip code signing (fine for local dev; not for distribution)
+
+For distribution-signed builds:
+
 ```bash
-./assets/hubert/hubert_base.pt
-
-./assets/pretrained 
-
-./assets/uvr5_weights
-
-Additional downloads are required if you want to test the v2 version of the model.
-
-./assets/pretrained_v2
-
-If you want to test the v2 version model (the v2 version model has changed the input from the 256 dimensional feature of 9-layer Hubert+final_proj to the 768 dimensional feature of 12-layer Hubert, and has added 3 period discriminators), you will need to download additional features
-
-./assets/pretrained_v2
-
-If you want to use the latest SOTA RMVPE vocal pitch extraction algorithm, you need to download the RMVPE weights and place them in the RVC root directory
-
-https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/rmvpe.pt
-
-    For AMD/Intel graphics cards users you need download:
-
-    https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/rmvpe.onnx
-
+export CODE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+./build_app.sh
+xcrun notarytool submit build/RVC-WebUI.app --keychain-profile AC_PROFILE --wait
+xcrun stapler staple build/RVC-WebUI.app
 ```
 
-### 2. Install FFmpeg
-If you have FFmpeg and FFprobe installed on your computer, you can skip this step.
+## Architecture
 
-#### For Ubuntu/Debian users
+```
+┌──────────────────────────────────────────────┐
+│          SwiftUI .app (RVCApp)               │
+│   NavigationSplitView + TabView              │
+│   toolbar: CPU / MEM / MPS monitor           │
+└───────────────────┬──────────────────────────┘
+                    │ JSON-RPC 2.0 over stdio
+                    │ (no network, no sockets)
+┌───────────────────▼──────────────────────────┐
+│        Python subprocess (rpc_server.py)     │
+│   VC · UVR5 · Training · Realtime · ONNX     │
+│   psutil + torch.mps resource sampling       │
+└──────────────────────────────────────────────┘
+```
+
+- Frontend: `RVCApp/` — SwiftUI, generated with `xcodegen` from `project.yml`
+- Bridge: `RVCApp/RVCApp/Bridge/PythonBridge.swift` — launches the Python subprocess, dispatches RPC calls, routes progress / resource notifications to `@Published` state
+- Backend: `rpc_server.py` + `rpc_training.py` — JSON-RPC methods wrap `infer/modules/vc`, `infer/modules/uvr5`, and training scripts; stdout is line-buffered for prompt first response
+- Assets: `assets/hubert/`, `assets/rmvpe/`, `assets/pretrained_v2/`, `assets/uvr5_weights/` — all copied into `.app/Contents/Resources/rvc_backend/assets/` at build time
+- Python runtime: `build/python_env/` via `conda-pack`, then embedded at `.app/Contents/Resources/python/`
+
+See [`BUILD_NATIVE_APP.md`](../../BUILD_NATIVE_APP.md) for the full build pipeline and architecture notes.
+
+## File layout
+
+**Inside the bundle** (`RVC-WebUI.app/Contents/Resources/`) — read-only:
+
+```
+rvc_backend/    # Python code + assets, copied from repo
+python/         # Bundled Python 3.10 runtime with all deps
+```
+
+**In your home directory** (`~/Documents/RVC-WebUI/`) — all your data:
+
+```
+input/
+  audio/          # Drop files here for inference
+  training/       # Training datasets
+output/
+  inference/      # Single-file conversion results (FLAC by default)
+  batch/          # Batch conversion results
+  separation/     # UVR5 vocals/ and accompaniment/
+  onnx/           # ONNX exports
+models/           # Your trained .pth voice models
+indices/          # FAISS .index files
+logs/             # Training checkpoints + logs, one dir per experiment
+configs/inuse/    # Runtime config
+temp/             # Scratch space, cleared at startup
+```
+
+## Troubleshooting
+
+**"RVC-WebUI.app is damaged and can't be opened"** — Ad-hoc signed builds trip Gatekeeper on fresh downloads. Fix:
 ```bash
-sudo apt install ffmpeg
+xattr -cr /Applications/RVC-WebUI.app
 ```
-#### For MacOS users
-```bash
-brew install ffmpeg
-```
-#### For Windows users
-Download these files and place them in the root folder:
-- [ffmpeg.exe](https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/ffmpeg.exe)
 
-- [ffprobe.exe](https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/ffprobe.exe)
+**"No supported NVIDIA GPU found"** — Expected. The app runs on MPS; this is a log line from an upstream code path, not an error.
 
-## ROCm Support for AMD graphic cards (Linux only)
-To use ROCm on Linux install all required drivers as described [here](https://rocm.docs.amd.com/en/latest/deploy/linux/os-native/install.html).
+**Training fails immediately in feature extraction** — Fixed in this fork. If you're building from a very old checkout, make sure `infer/lib/torch_compat.py` exists and is imported before `fairseq` in `extract_feature_print.py`, `infer/modules/vc/utils.py`, and `infer/lib/rtrvc.py`. This shim disables PyTorch 2.6+'s `weights_only=True` default that fairseq's HuBERT loader trips on.
 
-On Arch use pacman to install the driver:
-````
-pacman -S rocm-hip-sdk rocm-opencl-sdk
-````
+**MPS out-of-memory during training** — drop `batch_size_per_gpu`, close other apps, or set `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0` (already set at launch, but worth checking in `~/Documents/RVC-WebUI/logs/<exp>/train.log`).
 
-You might also need to set these environment variables (e.g. on a RX6700XT):
-````
-export ROCM_PATH=/opt/rocm #Set ROCM Executables Path
-export HSA_OVERRIDE_GFX_VERSION=10.3.0 #Spoof GPU Model for ROCM
-````
+**First launch is slow** — fairseq + torch cold-import is ~3 s on M1, ~2 s on M3. The splash shows "waiting for backend" until `alive` lands; no action needed.
 
-And overwrite PyTorch with its ROCM version after installing dependencies.
-````
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
-````
+## Development
 
-Make sure your user is part of the `render` and `video` group:
-````
-sudo usermod -aG render $USERNAME
-sudo usermod -aG video $USERNAME
-````
+The SwiftUI project is regenerated every build from `RVCApp/project.yml` via xcodegen, so don't hand-edit `RVCApp.xcodeproj`. Open `RVCApp.xcodeproj` in Xcode and Run — in dev mode the app launches the repo's `rpc_server.py` via your active conda env (not the bundled Python), which gives you a much faster iteration loop.
 
-## Get started
-### start up directly
-Use the following command to start WebUI:
-```bash
-python infer-web.py
-```
-### Use the integration package
-Download and extract file `RVC-beta.7z`, then follow the steps below according to your system:
-#### For Windows users
-Double click `go-web.bat`
-#### For MacOS users
-```bash
-sh ./run.sh
-```
-### For Intel IPEX users (Linux Only)
-```bash
-source /opt/intel/oneapi/setvars.sh
-```
+Python-side changes:
+- Source lives at repo root (`rpc_server.py`, `rpc_training.py`, `infer/`, `rvc/`, `configs/`, `i18n/`, `tools/`)
+- `./build_app.sh --skip-conda --skip-xcode` re-syncs the Python backend into an existing `.app` without rebuilding the Swift binary or repacking Python
+- For ad-hoc iteration against an already-built `.app`, `rsync -a infer/ build/RVC-WebUI.app/Contents/Resources/rvc_backend/infer/` is enough
+
 ## Credits
-+ [ContentVec](https://github.com/auspicious3000/contentvec/)
-+ [VITS](https://github.com/jaywalnut310/vits)
-+ [HIFIGAN](https://github.com/jik876/hifi-gan)
-+ [Gradio](https://github.com/gradio-app/gradio)
-+ [FFmpeg](https://github.com/FFmpeg/FFmpeg)
-+ [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
-+ [audio-slicer](https://github.com/openvpi/audio-slicer)
-+ [Vocal pitch extraction:RMVPE](https://github.com/Dream-High/RMVPE)
-  + The pretrained model is trained and tested by [yxlllc](https://github.com/yxlllc/RMVPE) and [RVC-Boss](https://github.com/RVC-Boss).
-  
-## Thanks to all contributors for their efforts
-<a href="https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/graphs/contributors" target="_blank">
-  <img src="https://contrib.rocks/image?repo=RVC-Project/Retrieval-based-Voice-Conversion-WebUI" />
-</a>
 
+- Upstream voice conversion framework: [fumiama/Retrieval-based-Voice-Conversion-WebUI](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI)
+- Core building blocks: [ContentVec](https://github.com/auspicious3000/contentvec), [VITS](https://github.com/jaywalnut310/vits), [HIFIGAN](https://github.com/jik876/hifi-gan), [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui), [audio-slicer](https://github.com/openvpi/audio-slicer), [RMVPE](https://github.com/Dream-High/RMVPE) (pretrained model by [yxlllc](https://github.com/yxlllc/RMVPE) and [RVC-Boss](https://github.com/RVC-Boss))
+- Initial macOS fork: [Nevil Patel](https://github.com/NevilPatel01/RVC-WebUI-MacOS)
+- Native `.app` rework: this repository
+
+## License
+
+MIT. See [LICENSE](../../LICENSE).

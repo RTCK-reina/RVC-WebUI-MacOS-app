@@ -1,0 +1,38 @@
+# Dependencies for the native .app build (SwiftUI + Python subprocess).
+# Differences from main.txt:
+#   - no gradio / fastapi / uvicorn / httpx / tornado / Werkzeug / Jinja2 (no web server)
+#   - no FreeSimpleGUI (replaced by SwiftUI)
+#   - no matplotlib / tensorboard* (optional plotting removed)
+#   - adds psutil (resource monitor) and sounddevice (realtime VC)
+
+joblib>=1.1.0
+numba
+numpy==1.23.5
+scipy
+librosa>=0.10.2
+llvmlite
+fairseq
+faiss-cpu
+Cython
+pydub>=0.25.1
+praat-parselmouth>=0.4.2
+Pillow>=9.1.1
+resampy>=0.4.2
+scikit-learn
+tqdm>=4.63.1
+PyYAML>=6.0
+fsspec>=2022.11.0
+audioread
+colorama>=0.4.5
+pyworld==0.3.2
+onnxruntime; sys_platform == 'darwin'
+onnxruntime-gpu; sys_platform != 'darwin'
+torchcrepe>=0.0.23
+torchfcpe
+python-dotenv>=1.0.0
+av
+pybase16384
+# New for the .app build:
+psutil>=5.9.0
+sounddevice>=0.4.6
+noisereduce>=3.0.0

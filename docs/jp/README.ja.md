@@ -1,203 +1,185 @@
 <div align="center">
 
-# Retrieval-based-Voice-Conversion-WebUI
-VITSに基づく使いやすい音声変換（voice changer）framework
+# RVC-WebUI-MacOS
 
+**Retrieval-based Voice Conversion を macOS ネイティブ `.app` として再構築したもの。**
+SwiftUI フロントエンド + バンドル済み Python バックエンド。ブラウザ不要・ネットワーク不要・pip install 不要。
 
+[![macOS](https://img.shields.io/badge/macOS-12.0%2B-black?style=for-the-badge&logo=apple)](https://www.apple.com/macos/)
+[![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-MPS-0071c5?style=for-the-badge)](https://developer.apple.com/metal/pytorch/)
+[![Licence](https://img.shields.io/github/license/RTCKPRO/RVC-WebUI-MacOS?style=for-the-badge)](../../LICENSE)
 
-[![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=orange)](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI)
-
-![moe](https://counter.seku.su/cmoe?name=rvc&theme=r34)
-
-[![Licence](https://img.shields.io/github/license/fumiama/Retrieval-based-Voice-Conversion-WebUI?style=for-the-badge)](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/blob/main/LICENSE)
-[![Huggingface](https://img.shields.io/badge/🤗%20-Spaces-yellow.svg?style=for-the-badge)](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/)
-
-[![Discord](https://img.shields.io/badge/RVC%20Developers-Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/HcsmBBGyVk)
-
-[**よくある質問**](./faq_ja.md) | [**AutoDLで推論(中国語のみ)**](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/wiki/Autodl%E8%AE%AD%E7%BB%83RVC%C2%B7AI%E6%AD%8C%E6%89%8B%E6%95%99%E7%A8%8B) | [**対照実験記録**](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/wiki/%E5%AF%B9%E7%85%A7%E5%AE%9E%E9%AA%8C%C2%B7%E5%AE%9E%E9%AA%8C%E8%AE%B0%E5%BD%95) | [**オンラインデモ(中国語のみ)**](https://modelscope.cn/studios/FlowerCry/RVCv2demo)
-
-[**English**](../en/README.en.md) | [**中文简体**](../../README.md) | [**日本語**](../jp/README.ja.md) | [**한국어**](../kr/README.ko.md) ([**韓國語**](../kr/README.ko.han.md)) | [**Français**](../fr/README.fr.md) | [**Türkçe**](../tr/README.tr.md) | [**Português**](../pt/README.pt.md)
+[**English**](../../README.md) · [**日本語**](./README.ja.md) · [**中文简体**](../cn/README.cn.md) · [**한국어**](../kr/README.ko.md) · [**Français**](../fr/README.fr.md) · [**Português**](../pt/README.pt.md) · [**Türkçe**](../tr/README.tr.md)
 
 </div>
 
-> 著作権侵害を心配することなく使用できるよう、約 50 時間の高品質なオープンソースデータセットを使用し、基底モデルを学習し出しました。
+---
 
-> RVCv3 の基底モデルをご期待ください。より大きなパラメータ、より大きなデータ、より良い効果を提供し、基本的に同様の推論速度を維持しながら学習に必要なデータ量はより少なくなります。
+## これは何か
 
-> モデルや統合パッケージをダウンロードしやすい[RVC-Models-Downloader](https://github.com/fumiama/RVC-Models-Downloader)のご利用がお勧めです。
+RVC-WebUI-MacOS は、[Retrieval-based Voice Conversion WebUI](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI) を Apple Silicon 向けの **単一スタンドアロン `.app`** として再パッケージしたものです。PyTorch、fairseq、すべての事前学習モデル（HuBERT、RMVPE、UVR5、pretrained_v2）はすべてバンドル内に同梱されています。ダウンロード後は、ダブルクリックするだけで起動できます — conda も pip も Homebrew も localhost URL も、ダウンロード後のインターネット接続も不要です。
 
-| 学習・推論 |
-| :--------: |
-| ![web](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/assets/41315874/17e48404-2627-4fad-a0ec-65f9065aeade) |
+本家プロジェクトはブラウザ内で Gradio を、リアルタイム VC ウィンドウに FreeSimpleGUI を使います。本フォークはその両方を **SwiftUI フロントエンド** に置き換え、**サブプロセスとして起動した Python バックエンド** と stdin/stdout 上の JSON-RPC でやり取りします。
 
-| 即時音声変換 |
-| :---------: |
-| ![realtime-gui](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/assets/41315874/95b36866-b92d-40c7-b5db-6a35ca5caeac) |
+## 特徴
 
-## はじめに
+- **完全オフライン** — すべての ML 重みがバンドル内にあります。アセットのダウンロード手順や HuggingFace 取得は一切ありません。
+- **Apple Silicon ファースト** — PyTorch MPS バックエンドを標準採用。MPS が未対応の演算は正しく CPU にフォールバックします。
+- **常時表示のリソースモニター** — ツールバーに CPU / ユニファイドメモリ / MPS 使用率を 1 秒毎に表示。
+- **正直な進捗バー** — タスクごとの %、フェーズラベル、ETA を表示。キャンセルボタンは実際に中断可能な処理にのみ出します。
+- **RVC の全機能を 1 つのアプリに集約**:
+  - 単一ファイル推論・バッチ推論
+  - UVR5 ボーカル/伴奏分離（どの HP/DeEcho/DeReverb モデルをいつ選ぶべきかのガイド付き）
+  - オプションの自動仕上げチェーン（抽出後の 2nd パス DeReverb）
+  - 学習パイプライン一式: 前処理 → F0 / 特徴量抽出 → 学習 → インデックス
+  - モデル管理: 比較・融合・抽出（軽量化）・情報編集
+  - ONNX 書き出し
+  - リアルタイムボイスチェンジャー（デバイス選択 + パラメータのホットリロード）
+- **分かりやすいファイル配置** — ユーザーファイルはすべて `~/Documents/RVC-WebUI/` 配下に集約。隠し Application Support フォルダに散らばることはありません。
+- **音質を劣化させないデフォルト** — 出力はデフォルトで FLAC（可逆圧縮）。WAV / MP3 / M4A も選択可能。
 
-本リポジトリには下記の特徴があります。
+## 動作環境
 
-- Top1 検索を用いることで、生の特徴量を学習用データセット特徴量に変換し、トーンリーケージを削減します。
-- 比較的貧弱な GPU でも、高速かつ簡単に学習できます。
-- 少量のデータセットからでも、比較的良い結果を得ることができます。（10 分以上のノイズの少ない音声を推奨します。）
-- モデルを融合することで、音声を混ぜることができます。（ckpt processing タブの、ckpt merge を使用します。）
-- 使いやすい WebUI。
-- UVR5 Model も含んでいるため、人の声と BGM を素早く分離できます。
-- 最先端の[人間の声のピッチ抽出アルゴリズム InterSpeech2023-RMVPE](#参照プロジェクト)を使用して無声音問題を解決します。効果は最高（著しく）で、crepe_full よりも速く、リソース使用が少ないです。
-- AMD GPU と Intel GPU の加速サポート
+| | 最低要件 | 推奨 |
+|---|---|---|
+| macOS | 12.0 Monterey | 14.0 Sonoma 以降 |
+| CPU | Apple Silicon (M1) | M2 Pro / M3 Pro 以上 |
+| RAM | 8 GB | 16 GB 以上（学習時はメモリを多く消費します） |
+| ディスク | 8 GB の空き | 学習する場合 20 GB 以上 |
 
-デモ動画は[こちら](https://www.bilibili.com/video/BV1pm4y1z7Gm/)でご覧ください。
+Intel Mac は **非対応** です — バンドル済み PyTorch は ARM64 専用です。
 
-## 環境構築
-### Python バージョン制限
-> conda で Python 環境を管理することがお勧めです
+## インストール
 
-> バージョン制限の原因はこの [bug](https://github.com/facebookresearch/fairseq/issues/5012) を参照してください。
+### エンドユーザー向け
+
+1. 最新の [Release](https://github.com/RTCKPRO/RVC-WebUI-MacOS/releases) から `RVC-WebUI.app.zip` をダウンロード。
+2. 解凍し、`RVC-WebUI.app` を `/Applications` にドラッグ。
+3. ダブルクリックで起動。初回起動時に Gatekeeper が確認を求めてきたら、アプリを右クリック → **開く** → ダイアログで再度 **開く**。
+
+初回起動時にアプリは `~/Documents/RVC-WebUI/` と、入出力・モデル・ログ用のサブディレクトリを作成します。書き込み先はこの場所だけです。
+
+### 開発者向け / ソースからビルド
 
 ```bash
-python --version # 3.8 <= Python < 3.11
+# 前提: Homebrew、Xcode CLT、Miniforge/conda
+brew install xcodegen conda-pack
+
+# 1. クローン
+git clone https://github.com/RTCKPRO/RVC-WebUI-MacOS.git
+cd RVC-WebUI-MacOS
+
+# 2. conda 環境の作成（Python 3.10 + PyTorch MPS + fairseq 等）
+./setup_conda_env.sh
+conda activate rvc
+
+# 3. （任意）Python バックエンド単体のスモークテスト
+python tools/test_rpc.py
+# 期待値: "ready" 通知 → initialize 応答 → 1 秒毎に resource_stats 通知
+
+# 4. フルの .app バンドルをビルド
+./build_app.sh
+# 生成物: build/RVC-WebUI.app  （PyTorch と全モデルを含めて約 4 GB）
 ```
 
-### Linux/MacOS ワンクリック依存関係インストール・起動するスクリプト
-プロジェクトのルートディレクトリで`run.sh`を実行するだけで、`venv`仮想環境を一括設定し、必要な依存関係を自動的にインストールし、メインプログラムを起動できます。
+ビルドオプション:
+
+- `--skip-conda` — 既存の Python env パック（`build/python_env/`）を再利用
+- `--skip-xcode` — 既存の Swift ビルド成果物を再利用
+- `--skip-sign` — コード署名をスキップ（ローカル開発用、配布には不可）
+
+配布用署名ビルド:
+
 ```bash
-sh ./run.sh
+export CODE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+./build_app.sh
+xcrun notarytool submit build/RVC-WebUI.app --keychain-profile AC_PROFILE --wait
+xcrun stapler staple build/RVC-WebUI.app
 ```
 
-### 依存関係のマニュアルインストレーション
-1. `pytorch`とそのコア依存関係をインストールします。すでにインストールされている場合は見送りできます。参考: https://pytorch.org/get-started/locally/
-	```bash
-	pip install torch torchvision torchaudio
-	```
-2. もし、Windows + Nvidia Ampere (RTX30xx)の場合、#21 の経験に基づき、pytorchの対応する CUDA バージョンを指定する必要があります。
-	```bash
-	pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu117
-	```
-3. 自分の GPU に対応する依存関係をインストールします。
-- Nvidia GPU
-	```bash
-	pip install -r requirements/main.txt
-	```
-- AMD/Intel GPU
-	```bash
-	pip install -r requirements/dml.txt
-	```
-- AMD ROCM (Linux)
-	```bash
-	pip install -r requirements/amd.txt
-	```
-- Intel IPEX (Linux)
-	```bash
-	pip install -r requirements/ipex.txt
-	```
+## アーキテクチャ
 
-## その他のデータを準備
+```
+┌──────────────────────────────────────────────┐
+│          SwiftUI .app (RVCApp)               │
+│   NavigationSplitView + TabView              │
+│   ツールバー: CPU / MEM / MPS モニター       │
+└───────────────────┬──────────────────────────┘
+                    │ JSON-RPC 2.0 over stdio
+                    │ （ネットワーク/ソケット不使用）
+┌───────────────────▼──────────────────────────┐
+│        Python サブプロセス (rpc_server.py)    │
+│   VC · UVR5 · 学習 · リアルタイム · ONNX     │
+│   psutil + torch.mps でリソース集計          │
+└──────────────────────────────────────────────┘
+```
 
-### 1. アセット
-> RVCは、`assets`フォルダにある幾つかのモデルリソースで推論・学習することが必要です。
-#### リソースの自動チェック/ダウンロード（デフォルト）
-> デフォルトでは、RVC は主プログラムの起動時に必要なリソースの完全性を自動的にチェックしできます。
+- フロントエンド: `RVCApp/` — SwiftUI、`project.yml` から `xcodegen` で生成
+- ブリッジ: `RVCApp/RVCApp/Bridge/PythonBridge.swift` — Python サブプロセス起動、RPC ディスパッチ、進捗/リソース通知を `@Published` 状態にルーティング
+- バックエンド: `rpc_server.py` + `rpc_training.py` — JSON-RPC メソッドが `infer/modules/vc`、`infer/modules/uvr5`、学習スクリプトをラップ。stdout は行バッファリング済みで初回応答を早める
+- アセット: `assets/hubert/`、`assets/rmvpe/`、`assets/pretrained_v2/`、`assets/uvr5_weights/` — ビルド時に `.app/Contents/Resources/rvc_backend/assets/` へコピー
+- Python ランタイム: `conda-pack` で `build/python_env/` を生成、`.app/Contents/Resources/python/` に埋め込み
 
-> リソースが不完全でも、プログラムは起動し続けます。
+ビルドパイプラインとアーキテクチャの詳細は [`BUILD_NATIVE_APP.md`](../../BUILD_NATIVE_APP.md) を参照してください。
 
-- すべてのリソースをダウンロードしたい場合は、`--update`パラメータを追加してください。
-- 起動時のリソース完全性チェックを不要の場合は、`--nocheck`パラメータを追加してください。
+## ファイル配置
 
-#### リソースのマニュアルダウンロード
-> すべてのリソースファイルは[Hugging Face space](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/)にあります。
+**バンドル内** (`RVC-WebUI.app/Contents/Resources/`) — 読み取り専用:
 
-> `tools`フォルダでそれらをダウンロードするスクリプトを見つけることができます。
+```
+rvc_backend/    # リポジトリからコピーされた Python コード + アセット
+python/         # バンドル済み Python 3.10 ランタイム（全依存含む）
+```
 
-> モデル/統合パッケージ/ツールの一括ダウンローダー、[RVC-Models-Downloader](https://github.com/fumiama/RVC-Models-Downloader)も使用できます。
+**ホームディレクトリ内** (`~/Documents/RVC-WebUI/`) — すべてのユーザーデータ:
 
-以下は、RVCが必要とするすべての事前モデルデータやその他のファイルの名前を含むリストです。
+```
+input/
+  audio/          # 推論対象の音声ファイルを置く場所
+  training/       # 学習用データセット
+output/
+  inference/      # 単一推論結果（デフォルト FLAC）
+  batch/          # バッチ変換結果
+  separation/     # UVR5 の vocals/ と accompaniment/
+  onnx/           # ONNX 書き出し
+models/           # 学習済み .pth 声モデル
+indices/          # FAISS .index ファイル
+logs/             # 学習チェックポイントとログ（実験ごとに 1 ディレクトリ）
+configs/inuse/    # ランタイム設定
+temp/             # 一時領域（起動時に削除）
+```
 
-- ./assets/hubert/hubert_base.pt
-	```bash
-	rvcmd assets/hubert # RVC-Models-Downloader command
-	```
-- ./assets/pretrained
-	```bash
-	rvcmd assets/v1 # RVC-Models-Downloader command
-	```
-- ./assets/uvr5_weights
-	```bash
-	rvcmd assets/uvr5 # RVC-Models-Downloader command
-	```
-v2バージョンのモデルを使用したい場合は、追加ダウンロードが必要です。
+## トラブルシューティング
 
-- ./assets/pretrained_v2
-	```bash
-	rvcmd assets/v2 # RVC-Models-Downloader command
-	```
-
-### 2. RMVPE人声音高抽出アルゴリズムに必要なファイルのダウンロード
-
-最新のRMVPE人声音高抽出アルゴリズムを使用したい場合は、音高抽出モデルをダウンロードし、`assets/rmvpe`に配置する必要があります。
-
-- [rmvpe.pt](https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/rmvpe.pt)
-	```bash
-	rvcmd assets/rmvpe # RVC-Models-Downloader command
-	```
-
-#### RMVPE(dml環境)のダウンロード（オプション、AMD/Intel GPU ユーザー）
-
-- [rmvpe.onnx](https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/rmvpe.onnx)
-	```bash
-	rvcmd assets/rmvpe # RVC-Models-Downloader command
-	```
-
-### 3. AMD ROCM（オプション、Linuxのみ）
-
-AMDのRocm技術を基にLinuxシステムでRVCを実行したい場合は、まず[ここ](https://rocm.docs.amd.com/en/latest/deploy/linux/os-native/install.html)で必要なドライバをインストールしてください。
-
-Arch Linuxを使用している場合は、pacmanを使用して必要なドライバをインストールできます。
-````
-pacman -S rocm-hip-sdk rocm-opencl-sdk
-````
-一部のグラフィックカードモデルでは、以下のような環境変数を追加で設定する必要があるかもしれません（例：RX6700XT）。
-````
-export ROCM_PATH=/opt/rocm
-export HSA_OVERRIDE_GFX_VERSION=10.3.0
-````
-また、現在のユーザーが`render`および`video`ユーザーグループに所属していることを確認してください。
-````
-sudo usermod -aG render $USERNAME
-sudo usermod -aG video $USERNAME
-````
-
-## 利用開始
-### 直接起動
-以下のコマンドで WebUI を起動します
+**「RVC-WebUI.app は壊れているため開けません」** — アドホック署名ビルドはダウンロード直後に Gatekeeper に引っかかることがあります。対処:
 ```bash
-python web.py
-```
-### Linux/MacOS
-```bash
-./run.sh
-```
-### IPEX 技術が必要な Intel GPU ユーザー向け(Linux のみ)
-```bash
-source /opt/intel/oneapi/setvars.sh
-./run.sh
-```
-### 統合パッケージの使用 (Windowsのみ)
-`RVC-beta.7z`をダウンロードして解凍し、`go-web.bat`をダブルクリック。
-```bash
-rvcmd packs/general/latest # RVC-Models-Downloader command
+xattr -cr /Applications/RVC-WebUI.app
 ```
 
-## 参考プロジェクト
-- [ContentVec](https://github.com/auspicious3000/contentvec/)
-- [VITS](https://github.com/jaywalnut310/vits)
-- [HIFIGAN](https://github.com/jik876/hifi-gan)
-- [Gradio](https://github.com/gradio-app/gradio)
-- [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
-- [audio-slicer](https://github.com/openvpi/audio-slicer)
-- [Vocal pitch extraction:RMVPE](https://github.com/Dream-High/RMVPE)
-  - 事前学習されたモデルは[yxlllc](https://github.com/yxlllc/RMVPE)と[RVC-Boss](https://github.com/RVC-Boss)によって学習され、テストされました。
+**「No supported NVIDIA GPU found」** — これは想定通りです。本アプリは MPS 上で動作しており、上流のコードパス由来のログ行で、エラーではありません。
 
-## すべての貢献者の努力に感謝します
+**学習が特徴量抽出で即失敗する** — 本フォークでは修正済みです。かなり古いチェックアウトからビルドしている場合は、`infer/lib/torch_compat.py` が存在し、`extract_feature_print.py`、`infer/modules/vc/utils.py`、`infer/lib/rtrvc.py` で `fairseq` より前に import されていることを確認してください。このシムは PyTorch 2.6+ の `weights_only=True` デフォルトを無効化するもので、fairseq の HuBERT ローダはこれに引っかかります。
 
-[![contributors](https://contrib.rocks/image?repo=fumiama/Retrieval-based-Voice-Conversion-WebUI)](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/graphs/contributors)
+**学習中の MPS メモリ不足** — `batch_size_per_gpu` を下げる、他のアプリを閉じる、あるいは `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0` を設定してください（起動時にすでに設定済みですが、`~/Documents/RVC-WebUI/logs/<exp>/train.log` で確認する価値はあります）。
+
+**初回起動が遅い** — fairseq + torch のコールドインポートは M1 で約 3 秒、M3 で約 2 秒です。`alive` が届くまでスプラッシュに「バックエンド待機中」と表示されます。操作不要です。
+
+## 開発
+
+SwiftUI プロジェクトは毎回 `RVCApp/project.yml` から xcodegen で再生成されるので、`RVCApp.xcodeproj` を手で編集しないでください。`RVCApp.xcodeproj` を Xcode で開いて Run するだけ — 開発モードではバンドルされた Python ではなくアクティブな conda 環境からリポジトリ直下の `rpc_server.py` を起動するため、反復が高速です。
+
+Python 側の変更:
+- ソースはリポジトリルート（`rpc_server.py`、`rpc_training.py`、`infer/`、`rvc/`、`configs/`、`i18n/`、`tools/`）
+- `./build_app.sh --skip-conda --skip-xcode` で既存 `.app` に Python バックエンドだけを再同期できます（Swift バイナリや Python の再パッキングはしない）
+- ビルド済み `.app` に対するアドホック反復なら `rsync -a infer/ build/RVC-WebUI.app/Contents/Resources/rvc_backend/infer/` で十分です
+
+## クレジット
+
+- 上流の音声変換フレームワーク: [fumiama/Retrieval-based-Voice-Conversion-WebUI](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI)
+- 構成要素: [ContentVec](https://github.com/auspicious3000/contentvec)、[VITS](https://github.com/jaywalnut310/vits)、[HIFIGAN](https://github.com/jik876/hifi-gan)、[Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)、[audio-slicer](https://github.com/openvpi/audio-slicer)、[RMVPE](https://github.com/Dream-High/RMVPE)（事前学習モデルは [yxlllc](https://github.com/yxlllc/RMVPE) と [RVC-Boss](https://github.com/RVC-Boss) による）
+- 初期 macOS フォーク: [Nevil Patel](https://github.com/NevilPatel01/RVC-WebUI-MacOS)
+- ネイティブ `.app` 再構築: 本リポジトリ
+
+## ライセンス
+
+MIT。[LICENSE](../../LICENSE) を参照してください。

@@ -9,7 +9,6 @@ import torch
 from io import BytesIO
 
 from infer.lib.audio import load_audio, wav2, save_audio, float_np_array_to_wav_buf
-from infer.lib.device import empty_device_cache
 from rvc.synthesizer import get_synthesizer, load_synthesizer
 from .info import show_model_info
 from .pipeline import Pipeline
@@ -29,6 +28,56 @@ class VC:
         self.hubert_model = None
 
         self.config = config
+
+    # -----------------------------------------------------------------
+    # Plain-data interface for the .app RPC server (no Gradio-shaped
+    # return values). Mirrors get_vc() but returns structured dicts.
+    # -----------------------------------------------------------------
+    def load_vc(self, sid):
+        """Load (or unload) a voice model. `sid` is the .pth file name.
+
+        Returns a dict describing the loaded model, or a minimal dict when the
+        model is cleared (sid == "").
+        """
+        if not sid:
+            # Clear caches / unload current model.
+            if self.hubert_model is not None:
+                logger.info("Clean model cache")
+                del (self.net_g, self.n_spk, self.hubert_model, self.tgt_sr)
+                self.hubert_model = self.net_g = self.n_spk = self.tgt_sr = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+            return {"loaded": False}
+
+        person = f'{os.getenv("weight_root")}/{sid}'
+        logger.info(f"Loading: {person}")
+        self.net_g, self.cpt = load_synthesizer(person, self.config.device)
+        self.tgt_sr = self.cpt["config"][-1]
+        self.cpt["config"][-3] = self.cpt["weight"]["emb_g.weight"].shape[0]
+        self.if_f0 = self.cpt.get("f0", 1)
+        self.version = self.cpt.get("version", "v1")
+
+        if self.config.is_half:
+            self.net_g = self.net_g.half()
+        else:
+            self.net_g = self.net_g.float()
+        self.pipeline = Pipeline(self.tgt_sr, self.config)
+
+        n_spk = self.cpt["config"][-3]
+        index_path = get_index_path_from_model(sid)
+
+        return {
+            "loaded": True,
+            "sid": sid,
+            "n_spk": int(n_spk),
+            "if_f0": int(self.if_f0),
+            "version": self.version,
+            "tgt_sr": int(self.tgt_sr),
+            "index_path": index_path,
+            "model_info": show_model_info(self.cpt),
+        }
 
     def get_vc(self, sid, *to_return_protect):
         logger.info("Get sid: " + sid)
@@ -54,14 +103,22 @@ class VC:
             ):  # 考虑到轮询, 需要加个判断看是否 sid 是由有模型切换到无模型的
                 logger.info("Clean model cache")
                 del (self.net_g, self.n_spk, self.hubert_model, self.tgt_sr)  # ,cpt
-                self.hubert_model = self.net_g = self.n_spk = self.tgt_sr = None
-                empty_device_cache()
+                self.hubert_model = self.net_g = self.n_spk = self.hubert_model = (
+                    self.tgt_sr
+                ) = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
                 ###楼下不这么折腾清理不干净
                 self.net_g, self.cpt = get_synthesizer(self.cpt, self.config.device)
                 self.if_f0 = self.cpt.get("f0", 1)
                 self.version = self.cpt.get("version", "v1")
                 del self.net_g, self.cpt
-                empty_device_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
             return (
                 (
                     {"visible": False, "__type__": "update"},
@@ -221,8 +278,8 @@ class VC:
                     ]
                 else:
                     paths = [path.name for path in paths]
-            except Exception:
-                logger.exception("failed to enumerate input paths")
+            except:
+                traceback.print_exc()
                 paths = [path.name for path in paths]
             infos = []
             for path in paths:
@@ -250,10 +307,10 @@ class VC:
                             tgt_sr,
                             f32=True,
                         )
-                    except Exception:
+                    except:
                         info += traceback.format_exc()
                 infos.append("%s->%s" % (os.path.basename(path), info))
                 yield "\n".join(infos)
             yield "\n".join(infos)
-        except Exception:
+        except:
             yield traceback.format_exc()

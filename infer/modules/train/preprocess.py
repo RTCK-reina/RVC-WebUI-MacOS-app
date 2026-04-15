@@ -13,6 +13,7 @@ n_p = int(sys.argv[3])
 exp_dir = sys.argv[4]
 noparallel = sys.argv[5] == "True"
 per = float(sys.argv[6])
+import os
 import traceback
 
 import numpy as np
@@ -80,16 +81,16 @@ class PreProcess:
                 ).getbuffer()
             )
 
-    def pipeline(self, path):
+    def pipeline(self, path, idx0):
         try:
             # Skip .DS_Store files
             if os.path.basename(path) == '.DS_Store':
                 return None
-            
+
             audio = load_audio(path, self.sr)
             if audio is None:
                 return None
-            
+
             # zero phased digital filter cause pre-ringing noise...
             # audio = signal.filtfilt(self.bh, self.ah, audio)
             audio = signal.lfilter(self.bh, self.ah, audio)
@@ -102,13 +103,13 @@ class PreProcess:
                     i += 1
                     if len(audio[start:]) > self.tail * self.sr:
                         tmp_audio = audio[start : start + int(self.per * self.sr)]
-                        self.norm_write(tmp_audio, path, idx1)
+                        self.norm_write(tmp_audio, idx0, idx1)
                         idx1 += 1
                     else:
                         tmp_audio = audio[start:]
                         idx1 += 1
                         break
-                self.norm_write(tmp_audio, path, idx1)
+                self.norm_write(tmp_audio, idx0, idx1)
             println("%s\t-> Success" % path)
             return audio
         except Exception as e:
@@ -117,13 +118,13 @@ class PreProcess:
 
     def pipeline_mp(self, infos):
         for path, idx0 in infos:
-            self.pipeline(path)
+            self.pipeline(path, idx0)
 
     def pipeline_mp_inp_dir(self, inp_root, n_p):
         try:
             infos = [
-                ("%s/%s" % (inp_root, name), name)
-                for name in sorted(list(os.listdir(inp_root)))
+                ("%s/%s" % (inp_root, name), idx)
+                for idx, name in enumerate(sorted(list(os.listdir(inp_root))))
             ]
             if noparallel:
                 for i in range(n_p):

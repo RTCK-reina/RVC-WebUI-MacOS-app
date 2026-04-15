@@ -1,11 +1,3 @@
-"""Feature extraction preprocess — macOS single-device edition.
-
-Runs HuBERT-based feature extraction over the 16 kHz wav slices produced by
-the preprocessing step. Originally the script supported CUDA / DirectML and
-branched on a user-supplied device string; on macOS we only ever want MPS or
-CPU, so the argv shape is simplified accordingly.
-"""
-
 import os
 import sys
 import traceback
@@ -14,21 +6,15 @@ now_dir = os.getcwd()
 sys.path.append(now_dir)
 
 from infer.lib.audio import load_audio
+# Patch torch.load to default weights_only=False before any fairseq import —
+# fairseq's load_checkpoint_to_cpu otherwise trips PyTorch 2.6+ safety default
+# on the HuBERT dictionary object. Must precede `import fairseq`.
+from infer.lib import torch_compat  # noqa: F401
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 
-# argv layout (macOS build):
-#   sys.argv[1]   requested device hint ("mps" | "cpu" | anything else ignored)
-#   sys.argv[2]   n_part
-#   sys.argv[3]   i_part
-#   sys.argv[4]   exp_dir
-#   sys.argv[5]   version ("v1" | "v2")
-#   sys.argv[6]   is_half ("true" | "false")  — MPS ignores this (forced fp32)
-# The upstream 8-argument form (including i_gpu / CUDA_VISIBLE_DEVICES) has
-# been dropped; callers that still pass the legacy extra element are tolerated
-# by reading positionally.
-device_hint = sys.argv[1].lower() if len(sys.argv) > 1 else ""
+device = sys.argv[1]
 n_part = int(sys.argv[2])
 i_part = int(sys.argv[3])
 if len(sys.argv) == 7:
@@ -36,29 +22,33 @@ if len(sys.argv) == 7:
     version = sys.argv[5]
     is_half = sys.argv[6].lower() == "true"
 else:
-    # Legacy 8-arg form from upstream: slot 4 was i_gpu. Ignore it on macOS.
+    i_gpu = sys.argv[4]
     exp_dir = sys.argv[5]
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(i_gpu)
     version = sys.argv[6]
     is_half = sys.argv[7].lower() == "true"
-
+import fairseq
 import numpy as np
 import torch
 import torch.nn.functional as F
-import fairseq
 
-# Pick device: explicit hint wins if valid, otherwise auto-detect MPS / CPU.
-if device_hint == "mps" and torch.backends.mps.is_available():
-    device = "mps"
-elif device_hint == "cpu":
+if "privateuseone" not in device:
     device = "cpu"
-elif torch.backends.mps.is_available():
-    device = "mps"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
 else:
-    device = "cpu"
+    import torch_directml
 
-# MPS does not support fp16 reliably for HuBERT. Force fp32 on macOS.
-if device != "cpu" and is_half:
-    is_half = False
+    device = torch_directml.device(torch_directml.default_device())
+
+    def forward_dml(ctx, x, scale):
+        ctx.scale = scale
+        res = x.clone().detach()
+        return res
+
+    fairseq.modules.grad_multiply.GradMultiply.forward = forward_dml
 
 f = open("%s/extract_f0_feature.log" % exp_dir, "a+")
 
@@ -109,10 +99,9 @@ models, saved_cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
 model = models[0]
 model = model.to(device)
 printt("move model to %s" % device)
-# fp16 is off for MPS / CPU (forced above). Left for completeness in case a
-# future backend on macOS supports it.
-if is_half and device not in ("mps", "cpu"):
-    model = model.half()
+if is_half:
+    if device not in ["mps", "cpu"]:
+        model = model.half()
 model.eval()
 
 todo = sorted(list(os.listdir(wavPath)))[i_part::n_part]
@@ -132,13 +121,12 @@ else:
 
                 feats = readwave(wav_path, normalize=saved_cfg.task.normalize)
                 padding_mask = torch.BoolTensor(feats.shape).fill_(False)
-                source = (
-                    feats.half().to(device)
-                    if is_half and device not in ("mps", "cpu")
-                    else feats.to(device)
-                )
                 inputs = {
-                    "source": source,
+                    "source": (
+                        feats.half().to(device)
+                        if is_half and device not in ["mps", "cpu"]
+                        else feats.to(device)
+                    ),
                     "padding_mask": padding_mask.to(device),
                     "output_layer": 9 if version == "v1" else 12,  # layer 9
                 }
@@ -155,6 +143,6 @@ else:
                     printt("%s-contains nan" % file)
                 if idx % n == 0:
                     printt("now-%s,all-%s,%s,%s" % (len(todo), idx, file, feats.shape))
-        except Exception:
+        except:
             printt(traceback.format_exc())
     printt("all-feature-done")

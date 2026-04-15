@@ -12,3 +12,8 @@ xcuserdata
 /logs
 
 /assets/weights/*
+
+# macOS native app build artifacts
+/build/
+/TEMP_DL/
+/.rpc_test_user/

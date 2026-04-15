@@ -114,3 +114,35 @@ class CascadedNet(nn.Module):
             return mask, aux
         else:
             return mask
+
+    def predict_mask(self, x):
+        mask = self.forward(x)
+        if self.offset > 0:
+            mask = mask[:, :, :, self.offset : -self.offset]
+            assert mask.size()[3] > 0
+        return mask
+
+    def predict(self, x_mag, aggressiveness=None):
+        """Apply the mask to the input and return the separated magnitude.
+
+        Mirrors the old CascadedASPPNet.predict API expected by
+        infer/lib/uvr5_pack/utils.py so DeEcho / DeReverb models work again.
+        Clones the mask because forward is wrapped in @torch.inference_mode()
+        and inference tensors cannot be modified in-place.
+        """
+        mix = x_mag.detach()
+        mask = self.forward(x_mag).clone()
+        if aggressiveness is not None:
+            split_bin = aggressiveness["split_bin"]
+            value = aggressiveness["value"]
+            mask[:, :, :split_bin] = torch.pow(
+                mask[:, :, :split_bin], 1 + value / 3
+            )
+            mask[:, :, split_bin:] = torch.pow(
+                mask[:, :, split_bin:], 1 + value
+            )
+        out = mask * mix
+        if self.offset > 0:
+            out = out[:, :, :, self.offset : -self.offset]
+            assert out.size()[3] > 0
+        return out
