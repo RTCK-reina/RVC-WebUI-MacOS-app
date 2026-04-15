@@ -86,21 +86,30 @@ def ensure_user_layout(user_dir: Path) -> None:
 
 
 def _populate_env_paths(base_dir: Path, user_dir: Path) -> None:
-    """Populate os.environ with the paths used across the codebase.
+    """Populate os.environ with the canonical paths used across the codebase.
 
-    This replaces the .env-driven configuration so that the RPC server and the
-    subprocesses it spawns (training/feature extraction) agree on where to read
+    This replaces the .env-driven configuration so the RPC server and every
+    subprocess it spawns (training/feature extraction) agree on where to read
     and write files, without any relative-cwd dependency.
+
+    IMPORTANT: this must OVERRIDE whatever a prior load_dotenv() may have
+    populated. The upstream ``.env`` bundled with this repo still carries
+    cwd-relative defaults (``weight_root = assets/weights`` etc.) that make
+    no sense for the .app: the bundle is read-only, cwd is user_dir, and user
+    weights must live at ``~/Documents/RVC-WebUI/models/``. If we use
+    ``setdefault`` here, ``load_dotenv`` wins and small-model saves end up in
+    ``~/Documents/RVC-WebUI/assets/weights/`` — an unexpected location the
+    rest of the app does not index. Force the assignment.
     """
-    os.environ.setdefault("weight_root", str(user_dir / "models"))
-    os.environ.setdefault("weight_uvr5_root", str(base_dir / "assets" / "uvr5_weights"))
-    os.environ.setdefault("index_root", str(user_dir / "logs"))
-    os.environ.setdefault("outside_index_root", str(user_dir / "indices"))
-    os.environ.setdefault("rmvpe_root", str(base_dir / "assets" / "rmvpe"))
+    os.environ["weight_root"] = str(user_dir / "models")
+    os.environ["weight_uvr5_root"] = str(base_dir / "assets" / "uvr5_weights")
+    os.environ["index_root"] = str(user_dir / "logs")
+    os.environ["outside_index_root"] = str(user_dir / "indices")
+    os.environ["rmvpe_root"] = str(base_dir / "assets" / "rmvpe")
     # Newly exposed knobs — consumed by rpc_server.py output logic.
-    os.environ.setdefault("output_root", str(user_dir / "output"))
-    os.environ.setdefault("input_root", str(user_dir / "input"))
-    os.environ.setdefault("TEMP", str(user_dir / "temp"))
+    os.environ["output_root"] = str(user_dir / "output")
+    os.environ["input_root"] = str(user_dir / "input")
+    os.environ["TEMP"] = str(user_dir / "temp")
 
 
 @singleton_variable

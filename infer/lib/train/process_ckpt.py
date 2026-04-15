@@ -11,6 +11,38 @@ from infer.modules.vc import model_hash_ckpt, hash_id
 i18n = I18nAuto()
 
 
+def _user_weight_path(basename: str) -> str:
+    """Return the absolute save path for a user-trained weight file.
+
+    Resolution order (first match wins):
+      1. ``weight_root`` env — the canonical knob set by
+         configs.config._populate_env_paths on app start; points at
+         ``user_dir/models/`` on the macOS .app.
+      2. ``RVC_USER_DIR`` env — set very early by rpc_server.py (pre-Config)
+         and always inherited by subprocesses. Acts as a safety net when
+         the training subprocess never actually imports Config (which is
+         what was happening in train.py: it never read weight_root, so
+         small-model saves ended up in cwd/assets/weights/ instead of
+         user_dir/models/).
+      3. ``assets/weights`` — upstream-compatible fallback (relative to
+         the current working directory). Matches the original repo's
+         behavior when neither of the two env hints is set.
+
+    The parent directory is always created so the very first save on a
+    fresh install does not trip
+    ``Parent directory assets/weights does not exist``.
+    """
+    root = os.environ.get("weight_root")
+    if not root:
+        user_dir = os.environ.get("RVC_USER_DIR")
+        if user_dir:
+            root = os.path.join(user_dir, "models")
+    if not root:
+        root = "assets/weights"
+    os.makedirs(root, exist_ok=True)
+    return os.path.join(root, basename)
+
+
 # add author sign
 def save_small_model(ckpt, sr, if_f0, name, epoch, version, hps):
     try:
@@ -51,7 +83,7 @@ def save_small_model(ckpt, sr, if_f0, name, epoch, version, hps):
         h = model_hash_ckpt(opt)
         opt["hash"] = h
         opt["id"] = hash_id(h)
-        torch.save(opt, "assets/weights/%s.pth" % name)
+        torch.save(opt, _user_weight_path("%s.pth" % name))
         return "Success."
     except:
         return traceback.format_exc()
@@ -188,7 +220,7 @@ def extract_small_model(path, name, author, sr, if_f0, info, version):
         h = model_hash_ckpt(opt)
         opt["hash"] = h
         opt["id"] = hash_id(h)
-        torch.save(opt, "assets/weights/%s.pth" % name)
+        torch.save(opt, _user_weight_path("%s.pth" % name))
         return "Success."
     except:
         return traceback.format_exc()
@@ -200,7 +232,7 @@ def change_info(path, info, name):
         ckpt["info"] = info
         if name == "":
             name = os.path.basename(path)
-        torch.save(ckpt, "assets/weights/%s" % name)
+        torch.save(ckpt, _user_weight_path(name))
         return "Success."
     except:
         return traceback.format_exc()
@@ -274,7 +306,7 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
         h = model_hash_ckpt(opt)
         opt["hash"] = h
         opt["id"] = hash_id(h)
-        torch.save(opt, "assets/weights/%s.pth" % name)
+        torch.save(opt, _user_weight_path("%s.pth" % name))
         return "Success."
     except:
         return traceback.format_exc()
