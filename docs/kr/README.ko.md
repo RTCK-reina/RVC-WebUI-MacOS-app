@@ -1,365 +1,185 @@
 <div align="center">
 
-# Retrieval-based-Voice-Conversion-WebUI
-VITS 기반의 간단하고 사용하기 쉬운 음성 변환 프레임워크.
+# RVC-WebUI-MacOS
 
-[![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=orange)](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI)
+**Retrieval-based Voice Conversion을 macOS 네이티브 `.app`으로 재구성한 것.**
+SwiftUI 프런트엔드 + 번들된 Python 백엔드. 브라우저 불필요, 네트워크 불필요, pip install 불필요.
 
-![moe](https://counter.seku.su/cmoe?name=rvc&theme=r34)
+[![macOS](https://img.shields.io/badge/macOS-12.0%2B-black?style=for-the-badge&logo=apple)](https://www.apple.com/macos/)
+[![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-MPS-0071c5?style=for-the-badge)](https://developer.apple.com/metal/pytorch/)
+[![Licence](https://img.shields.io/github/license/RTCKPRO/RVC-WebUI-MacOS?style=for-the-badge)](../../LICENSE)
 
-[![Licence](https://img.shields.io/github/license/fumiama/Retrieval-based-Voice-Conversion-WebUI?style=for-the-badge)](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/blob/main/LICENSE)
-[![Huggingface](https://img.shields.io/badge/🤗%20-Spaces-yellow.svg?style=for-the-badge)](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/)
-
-[![Discord](https://img.shields.io/badge/RVC%20Developers-Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/HcsmBBGyVk)
-
-[**자주 묻는 질문**](./faq_ko.md) | [**AutoDL·5원으로 AI 가수 훈련**](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/wiki/Autodl%E8%AE%AD%E7%BB%83RVC%C2%B7AI%E6%AD%8C%E6%89%8B%E6%95%99%E7%A8%8B) | [**대조 실험 기록**](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/wiki/%E5%AF%B9%E7%85%A7%E5%AE%9E%E9%AA%8C%C2%B7%E5%AE%9E%E9%AA%8C%E8%AE%B0%E5%BD%95) | [**온라인 데모**](https://modelscope.cn/studios/FlowerCry/RVCv2demo)
-
-[**English**](../en/README.en.md) | [**中文简体**](../../README.md) | [**日本語**](../jp/README.ja.md) | [**한국어**](../kr/README.ko.md) ([**韓國語**](../kr/README.ko.han.md)) | [**Français**](../fr/README.fr.md) | [**Türkçe**](../tr/README.tr.md) | [**Português**](../pt/README.pt.md)
+[**English**](../../README.md) · [**日本語**](../jp/README.ja.md) · [**中文简体**](../cn/README.cn.md) · [**한국어**](./README.ko.md) · [**Français**](../fr/README.fr.md) · [**Português**](../pt/README.pt.md) · [**Türkçe**](../tr/README.tr.md)
 
 </div>
 
-> 기본 모델은 50시간 가량의 고퀄리티 오픈 소스 VCTK 데이터셋을 사용하였으므로, 저작권상의 염려가 없으니 안심하고 사용하시기 바랍니다.
+---
 
-> 더 큰 매개변수, 더 큰 데이터, 더 나은 효과, 기본적으로 동일한 추론 속도, 더 적은 양의 훈련 데이터가 필요한 RVCv3의 기본 모델을 기대해 주십시오.
+## 이것이 무엇인가
 
-> 특정 지역에서 Hugging Face에 직접 연결할 수 없는 경우가 있으며, 성공적으로 연결해도 속도가 매우 느릴 수 있으므로, 모델/통합 패키지/도구의 일괄 다운로더를 특별히 소개합니다. [RVC-Models-Downloader](https://github.com/fumiama/RVC-Models-Downloader)
+RVC-WebUI-MacOS는 [Retrieval-based Voice Conversion WebUI](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI)를 Apple Silicon용 **단일 독립 실행 `.app`** 으로 재패키징한 것입니다. PyTorch, fairseq 및 모든 사전 학습 모델(HuBERT, RMVPE, UVR5, pretrained_v2)이 번들 내부에 모두 포함되어 있습니다. 다운로드 후 더블클릭으로 바로 실행됩니다 — conda도, pip도, Homebrew도, localhost URL도, 다운로드 이후의 인터넷 연결도 필요 없습니다.
 
-| 훈련 및 추론 인터페이스 |
-| :--------: |
-| ![web](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/assets/41315874/17e48404-2627-4fad-a0ec-65f9065aeade) |
+원 프로젝트는 브라우저에서 Gradio를, 실시간 VC 창에서는 FreeSimpleGUI를 사용합니다. 이 포크는 두 가지 모두를 **SwiftUI 프런트엔드**로 대체하고, 하위 프로세스로 실행되는 **Python 백엔드**와 stdin/stdout 상의 JSON-RPC로 통신합니다.
 
-| 실시간 음성 변환 인터페이스 |
-| :---------: |
-| ![realtime-gui](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/assets/41315874/95b36866-b92d-40c7-b5db-6a35ca5caeac) |
+## 특징
 
-## 소개
+- **완전 오프라인** — 모든 ML 가중치가 번들 안에 있습니다. 자산 다운로드 단계나 HuggingFace 가져오기가 없습니다.
+- **Apple Silicon 우선** — PyTorch MPS 백엔드 기본 지원. MPS가 처리하지 못하는 연산은 올바르게 CPU로 폴백합니다.
+- **상시 리소스 모니터** — 툴바에 CPU / 통합 메모리 / MPS 사용률을 매초 갱신하여 표시.
+- **정직한 진행 표시줄** — 작업별 %, 단계 라벨, ETA 표시. 취소 버튼은 실제로 중단 가능한 작업에만 노출됩니다.
+- **하나의 앱에 모든 RVC 기능**:
+  - 단일 파일 추론 및 배치 추론
+  - UVR5 보컬/반주 분리(어느 HP/DeEcho/DeReverb 모델을 언제 선택할지에 대한 가이드 포함)
+  - 선택적 자동 마무리 체인(보컬 추출 이후 2차 DeReverb)
+  - 전체 학습 파이프라인: 전처리 → F0 / 특징 추출 → 학습 → 인덱스
+  - 모델 관리: 비교, 융합, 추출(슬림화), 정보 편집
+  - ONNX 내보내기
+  - 실시간 보이스 체인저 — 장치 선택 및 파라미터 핫 리로드 지원
+- **알아보기 쉬운 파일 배치** — 모든 사용자 파일은 `~/Documents/RVC-WebUI/` 아래에 모이며, 숨겨진 Application Support 폴더에 흩어지지 않습니다.
+- **오디오 품질을 낮추지 않는 기본값** — 출력은 기본 FLAC(무손실); WAV / MP3 / M4A도 선택 가능.
 
-본 프로젝트는 다음과 같은 특징을 가지고 있습니다:
+## 시스템 요구 사항
 
-- top1 검색을 이용하여 입력 음색 특징을 훈련 세트 음색 특징으로 대체하여 음색의 누출을 방지
-- 상대적으로 낮은 성능의 GPU에서도 빠른 훈련 가능
-- 적은 양의 데이터로 훈련해도 좋은 결과를 얻을 수 있음 (최소 10분 이상의 저잡음 음성 데이터를 사용하는 것을 권장)
-- 모델 융합을 통한 음색의 변조 가능 (ckpt 처리 탭->ckpt 병합 선택)
-- 사용하기 쉬운 WebUI (웹 인터페이스)
-- UVR5 모델을 이용하여 목소리와 배경음악의 빠른 분리;
-- 최첨단 [음성 피치 추출 알고리즘 InterSpeech2023-RMVPE](#参考项目)을 사용하여 무성음 문제를 해결합니다. 효과는 최고(압도적)이며 crepe_full보다 더 빠르고 리소스 사용이 적음
-- A카드와 I카드 가속을 지원
+| | 최소 | 권장 |
+|---|---|---|
+| macOS | 12.0 Monterey | 14.0 Sonoma 이상 |
+| CPU | Apple Silicon (M1) | M2 Pro / M3 Pro 이상 |
+| RAM | 8 GB | 16 GB 이상 (학습은 메모리를 많이 씁니다) |
+| 디스크 | 8 GB 여유 공간 | 학습 시 20 GB 이상 |
 
-해당 프로젝트의 [데모 비디오](https://www.bilibili.com/video/BV1pm4y1z7Gm/)를 확인해보세요!
+Intel Mac은 **지원하지 않습니다** — 번들된 PyTorch는 ARM64 전용입니다.
 
-## 환경 설정
+## 설치
 
-다음 명령은 Python 버전이 3.8 이상인 환경에서 실행해야 합니다.
+### 최종 사용자
 
-### Windows/Linux/MacOS 등 플랫폼 공통 방법
+1. 최신 [Release](https://github.com/RTCKPRO/RVC-WebUI-MacOS/releases)에서 `RVC-WebUI.app.zip`을 다운로드합니다.
+2. 압축을 풀고 `RVC-WebUI.app`을 `/Applications`로 드래그합니다.
+3. 더블클릭하여 실행합니다. 최초 실행 시 Gatekeeper가 확인을 요구할 수 있습니다 — 앱을 우클릭 → **열기** → 대화상자에서 **열기**.
 
-아래 방법 중 하나를 선택하세요.
+첫 실행 시 앱은 입력, 출력, 모델, 로그용 하위 디렉터리와 함께 `~/Documents/RVC-WebUI/`를 생성합니다. 앱이 쓰는 유일한 위치입니다.
 
-#### 1. pip를 통한 의존성 설치
-
-1. Pytorch 및 의존성 모듈 설치, 이미 설치되어 있으면 생략. 참조: https://pytorch.org/get-started/locally/
-
-```bash
-pip install torch torchvision torchaudio
-```
-
-2. win 시스템 + Nvidia Ampere 아키텍처(RTX30xx) 사용 시, #21의 사례에 따라 pytorch에 해당하는 cuda 버전을 지정
-
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu117
-```
-
-3. 자신의 그래픽 카드에 맞는 의존성 설치
-
-- N카드
+### 개발자 / 소스로부터 빌드
 
 ```bash
-pip install -r requirements/main.txt
+# 전제: Homebrew, Xcode CLT, Miniforge/conda
+brew install xcodegen conda-pack
+
+# 1. 클론
+git clone https://github.com/RTCKPRO/RVC-WebUI-MacOS.git
+cd RVC-WebUI-MacOS
+
+# 2. conda 환경 생성 (Python 3.10 + PyTorch MPS + fairseq 등)
+./setup_conda_env.sh
+conda activate rvc
+
+# 3. (선택) Python 백엔드 단독 스모크 테스트
+python tools/test_rpc.py
+# 예상: "ready" 알림 → initialize 응답 → 매초 resource_stats 알림
+
+# 4. 전체 .app 번들 빌드
+./build_app.sh
+# 결과물: build/RVC-WebUI.app  (PyTorch와 모든 모델 포함 약 4 GB)
 ```
 
-- A카드/I카드
+빌드 옵션:
+
+- `--skip-conda` — 이전에 팩한 Python 환경(`build/python_env/`)을 재사용
+- `--skip-xcode` — 이전에 빌드한 Swift 바이너리를 재사용
+- `--skip-sign` — 코드 서명을 건너뜀 (로컬 개발에는 괜찮지만 배포에는 불가)
+
+배포용 서명 빌드:
 
 ```bash
-pip install -r requirements/dml.txt
+export CODE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+./build_app.sh
+xcrun notarytool submit build/RVC-WebUI.app --keychain-profile AC_PROFILE --wait
+xcrun stapler staple build/RVC-WebUI.app
 ```
 
-- A카드ROCM(Linux)
+## 아키텍처
 
+```
+┌──────────────────────────────────────────────┐
+│          SwiftUI .app (RVCApp)               │
+│   NavigationSplitView + TabView              │
+│   툴바: CPU / MEM / MPS 모니터               │
+└───────────────────┬──────────────────────────┘
+                    │ JSON-RPC 2.0 over stdio
+                    │ (네트워크/소켓 미사용)
+┌───────────────────▼──────────────────────────┐
+│       Python 하위 프로세스 (rpc_server.py)    │
+│   VC · UVR5 · 학습 · 실시간 · ONNX           │
+│   psutil + torch.mps 로 리소스 샘플링        │
+└──────────────────────────────────────────────┘
+```
+
+- 프런트엔드: `RVCApp/` — SwiftUI, `project.yml`에서 `xcodegen`으로 생성
+- 브리지: `RVCApp/RVCApp/Bridge/PythonBridge.swift` — Python 하위 프로세스 실행, RPC 호출 디스패치, 진행/리소스 알림을 `@Published` 상태로 라우팅
+- 백엔드: `rpc_server.py` + `rpc_training.py` — JSON-RPC 메서드가 `infer/modules/vc`, `infer/modules/uvr5` 및 학습 스크립트를 래핑; stdout은 즉각적인 첫 응답을 위해 라인 버퍼링
+- 자산: `assets/hubert/`, `assets/rmvpe/`, `assets/pretrained_v2/`, `assets/uvr5_weights/` — 빌드 시 `.app/Contents/Resources/rvc_backend/assets/`로 복사
+- Python 런타임: `conda-pack`으로 `build/python_env/`에 패키징, 이후 `.app/Contents/Resources/python/`에 포함
+
+빌드 파이프라인과 아키텍처 세부 사항은 [`BUILD_NATIVE_APP.md`](../../BUILD_NATIVE_APP.md)를 참조하세요.
+
+## 파일 배치
+
+**번들 내부** (`RVC-WebUI.app/Contents/Resources/`) — 읽기 전용:
+
+```
+rvc_backend/    # 저장소에서 복사된 Python 코드 + 자산
+python/         # 번들된 Python 3.10 런타임 (모든 의존성 포함)
+```
+
+**홈 디렉터리** (`~/Documents/RVC-WebUI/`) — 모든 사용자 데이터:
+
+```
+input/
+  audio/          # 추론용 파일 배치
+  training/       # 학습 데이터셋
+output/
+  inference/      # 단일 파일 변환 결과 (기본 FLAC)
+  batch/          # 배치 변환 결과
+  separation/     # UVR5의 vocals/ 와 accompaniment/
+  onnx/           # ONNX 내보내기
+models/           # 학습한 .pth 음성 모델
+indices/          # FAISS .index 파일
+logs/             # 학습 체크포인트 및 로그, 실험별 디렉터리 1개
+configs/inuse/    # 런타임 설정
+temp/             # 스크래치 공간, 시작 시 정리
+```
+
+## 문제 해결
+
+**"RVC-WebUI.app이 손상되어 열 수 없습니다"** — Ad-hoc 서명 빌드는 새로 다운로드한 직후 Gatekeeper에 걸릴 수 있습니다. 해결:
 ```bash
-pip install -r requirements/amd.txt
+xattr -cr /Applications/RVC-WebUI.app
 ```
 
-- I카드IPEX(Linux)
+**"No supported NVIDIA GPU found"** — 예상된 동작입니다. 앱은 MPS 위에서 동작하며, 이는 상위 코드 경로에서 출력되는 로그 라인이지 오류가 아닙니다.
 
-```bash
-pip install -r requirements/ipex.txt
-```
+**학습이 특징 추출에서 곧바로 실패** — 이 포크에서 수정되었습니다. 아주 오래된 체크아웃에서 빌드 중이라면 `infer/lib/torch_compat.py`가 존재하는지, 그리고 `extract_feature_print.py`, `infer/modules/vc/utils.py`, `infer/lib/rtrvc.py`에서 `fairseq`보다 먼저 import되는지 확인하세요. 이 shim은 PyTorch 2.6+의 `weights_only=True` 기본값을 비활성화하며, fairseq의 HuBERT 로더는 이 기본값에 걸립니다.
 
-#### 2. poetry를 통한 의존성 설치
+**학습 중 MPS 메모리 부족** — `batch_size_per_gpu`를 낮추고, 다른 앱을 닫고, 또는 `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0`을 설정하세요 (시작 시 이미 설정되지만 `~/Documents/RVC-WebUI/logs/<exp>/train.log`에서 확인할 가치가 있습니다).
 
-Poetry 의존성 관리 도구 설치, 이미 설치된 경우 생략. 참조: https://python-poetry.org/docs/#installation
+**첫 실행이 느림** — fairseq + torch의 콜드 임포트는 M1에서 약 3초, M3에서 약 2초입니다. `alive`가 도착할 때까지 스플래시에 "백엔드 대기 중"이 표시됩니다. 별도의 조작이 필요 없습니다.
 
-```bash
-curl -sSL https://install.python-poetry.org | python3 -
-```
+## 개발
 
-poetry를 통한 의존성 설치
+SwiftUI 프로젝트는 매 빌드마다 `RVCApp/project.yml`에서 xcodegen으로 재생성되므로 `RVCApp.xcodeproj`를 손으로 편집하지 마세요. Xcode에서 `RVCApp.xcodeproj`를 열고 Run을 누르면 됩니다 — 개발 모드에서 앱은 번들된 Python이 아닌 현재 활성 conda 환경으로 저장소의 `rpc_server.py`를 실행하므로 반복 속도가 훨씬 빠릅니다.
 
-```bash
-poetry install
-```
+Python 측 변경:
+- 소스는 저장소 루트에 있습니다 (`rpc_server.py`, `rpc_training.py`, `infer/`, `rvc/`, `configs/`, `i18n/`, `tools/`)
+- `./build_app.sh --skip-conda --skip-xcode`는 Swift 바이너리 재빌드나 Python 재패키징 없이 기존 `.app`에 Python 백엔드만 재동기화합니다
+- 이미 빌드된 `.app`에 대한 임시 반복에는 `rsync -a infer/ build/RVC-WebUI.app/Contents/Resources/rvc_backend/infer/`로 충분합니다
 
-### MacOS
+## 크레딧
 
-`run.sh`를 통해 의존성 설치 가능
+- 상위 음성 변환 프레임워크: [fumiama/Retrieval-based-Voice-Conversion-WebUI](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI)
+- 구성 요소: [ContentVec](https://github.com/auspicious3000/contentvec), [VITS](https://github.com/jaywalnut310/vits), [HIFIGAN](https://github.com/jik876/hifi-gan), [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui), [audio-slicer](https://github.com/openvpi/audio-slicer), [RMVPE](https://github.com/Dream-High/RMVPE) (사전 학습 모델은 [yxlllc](https://github.com/yxlllc/RMVPE)와 [RVC-Boss](https://github.com/RVC-Boss) 제작)
+- 초기 macOS 포크: [Nevil Patel](https://github.com/NevilPatel01/RVC-WebUI-MacOS)
+- 네이티브 `.app` 재구성: 이 저장소
 
-```bash
-sh ./run.sh
-```
+## 라이선스
 
-<!--
-
-## 其他资源准备
-### 1. assets
-> RVC需要位于`assets`文件夹下的一些模型资源进行推理和训练。
-#### 自动检查/下载资源(默认)
-> 默认情况下，RVC可在主程序启动时自动检查所需资源的完整性。
-
-> 即使资源不完整，程序也将继续启动。
-
-- 如果您希望下载所有资源，请添加`--update`参数
-- 如果您希望跳过启动时的资源完整性检查，请添加`--nocheck`参数
-
-#### 手动下载资源
-> 所有资源文件均位于[Hugging Face space](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/)
-
-> 你可以在`tools`文件夹找到下载它们的脚本
-
-> 你也可以使用模型/整合包/工具的一键下载器：[RVC-Models-Downloader](https://github.com/fumiama/RVC-Models-Downloader)
-
-以下是一份清单，包括了所有RVC所需的预模型和其他文件的名称。
-
-- ./assets/hubert/hubert_base.pt
-	```bash
-	rvcmd assets/hubert # RVC-Models-Downloader command
-	```
-- ./assets/pretrained
-	```bash
-	rvcmd assets/v1 # RVC-Models-Downloader command
-	```
-- ./assets/uvr5_weights
-	```bash
-	rvcmd assets/uvr5 # RVC-Models-Downloader command
-	```
-想使用v2版本模型的话，需要额外下载
-
-- ./assets/pretrained_v2
-	```bash
-	rvcmd assets/v2 # RVC-Models-Downloader command
-	```
-
-### 3. 下载 rmvpe 人声音高提取算法所需文件
-
-如果你想使用最新的RMVPE人声音高提取算法，则你需要下载音高提取模型参数并放置于`assets/rmvpe`。
-
-- 下载[rmvpe.pt](https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/rmvpe.pt)
-	```bash
-	rvcmd assets/rmvpe # RVC-Models-Downloader command
-	```
-
-#### 下载 rmvpe 的 dml 环境(可选, A卡/I卡用户)
-
-- 下载[rmvpe.onnx](https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/rmvpe.onnx)
-	```bash
-	rvcmd assets/rmvpe # RVC-Models-Downloader command
-	```
-
-### 4. AMD显卡Rocm(可选, 仅Linux)
-
-如果你想基于AMD的Rocm技术在Linux系统上运行RVC，请先在[这里](https://rocm.docs.amd.com/en/latest/deploy/linux/os-native/install.html)安装所需的驱动。
-
-若你使用的是Arch Linux，可以使用pacman来安装所需驱动：
-````
-pacman -S rocm-hip-sdk rocm-opencl-sdk
-````
-对于某些型号的显卡，你可能需要额外配置如下的环境变量（如：RX6700XT）：
-````
-export ROCM_PATH=/opt/rocm
-export HSA_OVERRIDE_GFX_VERSION=10.3.0
-````
-同时确保你的当前用户处于`render`与`video`用户组内：
-````
-sudo usermod -aG render $USERNAME
-sudo usermod -aG video $USERNAME
-````
-
-## 开始使用
-### 直接启动
-使用以下指令来启动 WebUI
-```bash
-python web.py
-```
-### Linux/MacOS 用户
-```bash
-./run.sh
-```
-### 对于需要使用IPEX技术的I卡用户(仅Linux)
-```bash
-source /opt/intel/oneapi/setvars.sh
-./run.sh
-```
-### 使用整合包 (Windows 用户)
-下载并解压`RVC-beta.7z`，解压后双击`go-web.bat`即可一键启动。
-```bash
-rvcmd packs/general/latest # RVC-Models-Downloader command
-```
-
-## 参考项目
-+ [ContentVec](https://github.com/auspicious3000/contentvec/)
-+ [VITS](https://github.com/jaywalnut310/vits)
-+ [HIFIGAN](https://github.com/jik876/hifi-gan)
-+ [Gradio](https://github.com/gradio-app/gradio)
-+ [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
-+ [audio-slicer](https://github.com/openvpi/audio-slicer)
-+ [Vocal pitch extraction:RMVPE](https://github.com/Dream-High/RMVPE)
-  + The pretrained model is trained and tested by [yxlllc](https://github.com/yxlllc/RMVPE) and [RVC-Boss](https://github.com/RVC-Boss).
-
-## 感谢所有贡献者作出的努力
-[![contributors](https://contrib.rocks/image?repo=fumiama/Retrieval-based-Voice-Conversion-WebUI)](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/graphs/contributors)
-
-translate to Korean
--->
-
-## 기타 사전 훈련된 모델 준비
-
-### assets
-
-> RVC는 추론과 훈련을 위해 assets 폴더 하위에 사전 훈련된 모델이 필요합니다.
-
-#### 자동 검사/다운로드 리소스(기본값)
-
-> 기본적으로 RVC는 시작할 때 필요한 리소스의 무결성을 자동으로 확인할 수 있습니다.
-
-> 리소스가 불완전하더라도 프로그램은 계속 실행됩니다.
-
-- 모든 리소스를 다운로드하려면 `--update` 매개변수를 추가하세요
-- 시작 시 리소스 무결성 검사를 건너뛰려면 `--nocheck` 매개변수를 추가하세요
-
-#### 리소스 수동 다운로드
-
-> 모든 리소스 파일은 [Hugging Face space](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/)에 있습니다.
-
-> 이들을 다운로드하는 스크립트는 `tools` 폴더에서 찾을 수 있습니다.
-
-> 모델/통합 패키지/도구의 일괄 다운로더를 사용할 수도 있습니다: [RVC-Models-Downloader](https://github.com/fumiama/RVC-Models-Downloader)
-
-다음은 RVC에 필요한 모든 사전 훈련된 모델과 기타 파일의 목록입니다.
-
-- ./assets/hubert/hubert_base.pt
-
-  ```bash
-  rvcmd assets/hubert # RVC-Models-Downloader command
-  ```
-
-- ./assets/pretrained
-
-  ```bash
-  rvcmd assets/v1 # RVC-Models-Downloader command
-  ```
-
-- ./assets/uvr5_weights
-  ```bash
-  rvcmd assets/uvr5 # RVC-Models-Downloader command
-  ```
-
-v2 버전 모델을 사용하려면 추가로 다음을 다운로드해야 합니다.
-
-- ./assets/pretrained_v2
-  ```bash
-  rvcmd assets/v2 # RVC-Models-Downloader command
-  ```
-
-### 2. RMVPE 인간 음성 피치 추출 알고리즘에 필요한 파일 다운로드
-
-최신 RMVPE 인간 음성 피치 추출 알고리즘을 사용하려면 음피치 추출 모델 매개변수를 다운로드하고 RVC 루트 디렉토리에 배치해야 합니다.
-
-- [rmvpe.pt 다운로드](https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/rmvpe.pt)
-
-#### dml 환경의 RMVPE 다운로드(선택사항, A카드/I카드 사용자)
-
-- [rmvpe.onnx 다운로드](https://huggingface.co/lj1995/VoiceConversionWebUI/blob/main/rmvpe.onnx)
-
-### 3. AMD 그래픽 카드 Rocm(선택사항, Linux만 해당)
-
-Linux 시스템에서 AMD의 Rocm 기술을 기반으로 RVC를 실행하려면 [여기](https://rocm.docs.amd.com/en/latest/deploy/linux/os-native/install.html)에서 필요한 드라이버를 먼저 설치하세요.
-
-Arch Linux를 사용하는 경우 pacman을 사용하여 필요한 드라이버를 설치할 수 있습니다.
-
-```
-pacman -S rocm-hip-sdk rocm-opencl-sdk
-```
-
-일부 모델의 그래픽 카드(예: RX6700XT)의 경우, 다음과 같은 환경 변수를 추가로 설정해야 할 수 있습니다.
-
-```
-export ROCM_PATH=/opt/rocm
-export HSA_OVERRIDE_GFX_VERSION=10.3.0
-```
-
-그리고 종속 요소를 설치한 후 PyTorch를 ROCM 버전으로 덮어씁니다.
-
-````
-pip 설치 토치 토치비전 토치오디오 --index-url https://download.pytorch.org/whl/rocm6.2
-````
-
-동시에 현재 사용자가 `render` 및 `video` 사용자 그룹에 속해 있는지 확인하세요.
-
-```
-sudo usermod -aG render $USERNAME
-sudo usermod -aG video $USERNAME
-```
-
-## 시작하기
-
-### 직접 시작
-
-다음 명령어로 WebUI를 시작하세요
-
-```bash
-python web.py
-```
-
-### 통합 패키지 사용
-
-`RVC-beta.7z`를 다운로드하고 압축 해제
-
-#### Windows 사용자
-
-`go-web.bat` 더블 클릭
-
-#### MacOS 사용자
-
-```bash
-sh ./run.sh
-```
-
-### IPEX 기술이 필요한 I카드 사용자를 위한 지침(Linux만 해당)
-
-```bash
-source /opt/intel/oneapi/setvars.sh
-```
-
-## 참조 프로젝트
-
-- [ContentVec](https://github.com/auspicious3000/contentvec/)
-- [VITS](https://github.com/jaywalnut310/vits)
-- [HIFIGAN](https://github.com/jik876/hifi-gan)
-- [Gradio](https://github.com/gradio-app/gradio)
-- [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
-- [audio-slicer](https://github.com/openvpi/audio-slicer)
-- [Vocal pitch extraction:RMVPE](https://github.com/Dream-High/RMVPE)
-  - 사전 훈련된 모델은 [yxlllc](https://github.com/yxlllc/RMVPE)와 [RVC-Boss](https://github.com/RVC-Boss)에 의해 훈련되고 테스트되었습니다.
-
-## 모든 기여자들의 노력에 감사드립니다
-
-[![contributors](https://contrib.rocks/image?repo=fumiama/Retrieval-based-Voice-Conversion-WebUI)](https://github.com/fumiama/Retrieval-based-Voice-Conversion-WebUI/graphs/contributors)
+MIT. [LICENSE](../../LICENSE)를 참조하세요.
