@@ -52,16 +52,24 @@ def _exp_dir(config, exp_name: str) -> Path:
 
 
 def _spawn(cmd: list, cwd: str, log_path: Path) -> subprocess.Popen:
-    """Start a subprocess, redirecting stdout+stderr to log_path."""
+    """Start a subprocess, redirecting stdout+stderr to log_path.
+
+    The log file descriptor is closed in the parent process right after
+    Popen inherits it. The kernel keeps the underlying file open for the
+    child via descriptor duplication, so the child can still write until it
+    exits; the parent no longer holds a reference that could leak across
+    many _spawn() invocations (observed with repeated preprocess/train
+    cycles).
+    """
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_f = open(log_path, "a", encoding="utf-8")
     logger.info("exec: %s (log=%s)", " ".join(cmd), log_path)
-    return subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        stdout=log_f,
-        stderr=subprocess.STDOUT,
-    )
+    with open(log_path, "a", encoding="utf-8") as log_f:
+        return subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+        )
 
 
 def _terminate_procs(procs: list, graceful_wait: float = 3.0) -> None:
@@ -240,6 +248,14 @@ def rpc_preprocess(params: dict, ctx):
             log_path, done_event, task_id, emit_progress,
             cancel_event=task.cancel_event, proc=proc, phase="preprocessing",
         )
+        # Cancellation is authoritative over returncode: after _terminate_procs
+        # sends SIGTERM + SIGKILL, `proc.returncode` may still be None if the
+        # grace window elapsed before the child actually exited, and
+        # `None not in (0, None)` is False — so a plain returncode check would
+        # fall through into the `success` branch and the UI would think a
+        # cancelled job completed normally. Check the cancel flag first.
+        if task.cancel_event.is_set():
+            return {"status": "cancelled", "log": log, "exp_dir": str(exp_dir)}
         emit_progress(task_id, 100.0, "preprocess done", "preprocessing")
         # A non-zero exit from preprocess.py means the stage failed (missing
         # inputs, permission error, load_audio traceback, etc.). Report that
@@ -308,14 +324,15 @@ def rpc_extract_f0(params: dict, ctx):
                 log_path, done_event, task_id, emit_progress,
                 cancel_event=task.cancel_event, proc=proc, phase="f0",
             )
+            # Same cancellation-over-returncode ordering as rpc_preprocess:
+            # after SIGTERM the returncode may still be None on a racy exit.
+            if task.cancel_event.is_set():
+                return {"status": "cancelled"}
             if proc.returncode not in (0, None):
                 return {
                     "status": "error",
                     "error": "extract_f0_print.py exited with code %d" % proc.returncode,
                 }
-
-        if task.cancel_event.is_set():
-            return {"status": "cancelled"}
 
         # Step 2: Feature extraction (may parallelize across gpus).
         procs = []
@@ -342,6 +359,11 @@ def rpc_extract_f0(params: dict, ctx):
             log_path, done_event, task_id, emit_progress,
             cancel_event=task.cancel_event, procs=procs, phase="features",
         )
+        # Cancellation-over-returncode: if we were cancelled, one or more
+        # workers may still have returncode=None (SIGTERM grace elapsed
+        # before exit). Report cancelled before claiming anything else.
+        if task.cancel_event.is_set():
+            return {"status": "cancelled", "log": log}
         emit_progress(task_id, 100.0, "feature extraction done", "features")
         # Check exit codes of all feature-extraction workers; any non-zero
         # exit means that GPU shard failed (e.g. fairseq import error,
@@ -454,6 +476,9 @@ def rpc_train(params: dict, ctx):
             cancel_event=task.cancel_event, proc=proc, phase="training",
             percent_from_log=_train_percent_from_log,
         )
+        # Cancellation-over-returncode: see rpc_preprocess for the rationale.
+        if task.cancel_event.is_set():
+            return {"status": "cancelled", "log": log, "exp_dir": str(exp_dir)}
         emit_progress(task_id, 100.0, "training done", "training")
         # A non-zero train.py exit means training crashed (missing package,
         # empty filelist, MPS op error, ...). Propagate that so rpc_train_all
@@ -606,7 +631,11 @@ def rpc_train_index(params: dict, ctx):
         if (r := _check_cancel()): return r
 
         np.save(exp_dir / "total_fea.npy", big_npy)
-        n_ivf = min(int(16 * np.sqrt(big_npy.shape[0])), big_npy.shape[0] // 39)
+        # n_ivf must be >= 1; with very small datasets (< 39 features) the
+        # original `min(int(16*sqrt(N)), N//39)` collapses to 0 and FAISS
+        # rejects "IVF0,Flat". max(1, ...) keeps tiny datasets buildable
+        # (degenerates to a single-cluster IVF, effectively equivalent to Flat).
+        n_ivf = max(1, min(int(16 * np.sqrt(big_npy.shape[0])), big_npy.shape[0] // 39))
         emit_progress(task_id, 50, "training IVF index", "index")
         index = faiss.index_factory(
             256 if version == "v1" else 768, "IVF%s,Flat" % n_ivf
@@ -681,6 +710,15 @@ def rpc_train_all(params: dict, ctx):
                       f"stage: {name}", "pipeline")
         r = fn(stage_params, ctx)
         results[name] = r
+        # Propagate cancellation distinctly — the UI distinguishes cancelled
+        # from error and should not show "train_all failed" when the user hit
+        # the cancel button.
+        if r.get("status") == "cancelled":
+            return {
+                "status": "cancelled",
+                "cancelled_stage": name,
+                "results": results,
+            }
         if r.get("status") != "success":
             return {"status": "error", "failed_stage": name, "results": results}
     emit_progress(task_id, 100.0, "all stages done", "pipeline")
@@ -694,6 +732,13 @@ def rpc_train_all(params: dict, ctx):
 
 # Module-global realtime state because sounddevice streams must survive across
 # RPC calls (start -> update_params -> stop).
+#
+# Guarded by _realtime_lock: start, update_params and stop each perform a
+# check-then-act on this dict and could race when the UI triggers them in
+# quick succession. The audio callback intentionally does NOT take the lock
+# (callbacks run on the sounddevice thread at real-time priority); it only
+# reads stop_event, which is thread-safe on its own.
+_realtime_lock = threading.Lock()
 _realtime_state = {
     "rvc": None,
     "stream": None,
@@ -747,8 +792,13 @@ def rpc_realtime_start(params: dict, ctx):
     This is a minimal viable implementation — for production, further tuning
     of block size, crossfading, and noise reduction is needed.
     """
-    if _realtime_state["stream"] is not None:
-        return {"status": "error", "error": "already running"}
+    # Reservation pattern: briefly take the lock to check-and-claim the
+    # "stream" slot, then do the heavy RVC/sounddevice init outside the
+    # lock so that concurrent update_params/stop don't stall for seconds.
+    with _realtime_lock:
+        if _realtime_state["stream"] is not None:
+            return {"status": "error", "error": "already running"}
+        _realtime_state["stream"] = "starting"  # reservation sentinel
 
     import numpy as np
     import sounddevice as sd
@@ -855,35 +905,54 @@ def rpc_realtime_start(params: dict, ctx):
     try:
         stream.start()
     except Exception as e:
+        # Release the reservation so the next start() call can proceed.
+        with _realtime_lock:
+            _realtime_state["stream"] = None
         return {"status": "error", "error": f"stream.start failed: {e}"}
 
-    _realtime_state["rvc"] = rvc
-    _realtime_state["stream"] = stream
-    _realtime_state["stop_event"] = stop_event
-    _realtime_state["params"] = dict(params)
-    _realtime_state["sample_rate"] = sample_rate
+    with _realtime_lock:
+        _realtime_state["rvc"] = rvc
+        _realtime_state["stream"] = stream  # replace "starting" sentinel
+        _realtime_state["stop_event"] = stop_event
+        _realtime_state["params"] = dict(params)
+        _realtime_state["sample_rate"] = sample_rate
 
     status("realtime")
     return {"status": "success", "sample_rate": sample_rate, "model_sr": int(sr_model)}
 
 
 def rpc_realtime_update_params(params: dict, ctx):
-    rvc = _realtime_state.get("rvc")
-    if rvc is None:
-        return {"status": "error", "error": "not running"}
-    if "pitch" in params:
-        rvc.set_key(float(params["pitch"]))
-    if "formant" in params:
-        rvc.set_formant(float(params["formant"]))
-    if "index_rate" in params:
-        rvc.set_index_rate(float(params["index_rate"]))
+    with _realtime_lock:
+        rvc = _realtime_state.get("rvc")
+        if rvc is None:
+            return {"status": "error", "error": "not running"}
+        # rvc.set_* are cheap and only touch the RVC instance, so it is safe
+        # to call them while holding the state lock. This guarantees we never
+        # dereference a partially-initialized or torn-down rvc handle.
+        if "pitch" in params:
+            rvc.set_key(float(params["pitch"]))
+        if "formant" in params:
+            rvc.set_formant(float(params["formant"]))
+        if "index_rate" in params:
+            rvc.set_index_rate(float(params["index_rate"]))
     return {"status": "success"}
 
 
 def rpc_realtime_stop(params: dict, ctx):
     status = ctx["status"]
-    stream = _realtime_state.get("stream")
-    stop_event = _realtime_state.get("stop_event")
+    # Snapshot + clear under the lock so the stream handle cannot be replaced
+    # out from under us by a concurrent start(); release the lock before the
+    # potentially-blocking stream.stop()/close() calls.
+    with _realtime_lock:
+        stream = _realtime_state.get("stream")
+        stop_event = _realtime_state.get("stop_event")
+        # Treat the "starting" reservation as "nothing to stop yet".
+        if not isinstance(stream, sounddevice_stream_type()):  # type: ignore[name-defined]
+            stream = None
+        _realtime_state.update({
+            "rvc": None, "stream": None, "stop_event": None,
+            "thread": None, "params": None,
+        })
     if stop_event is not None:
         stop_event.set()
     if stream is not None:
@@ -892,12 +961,21 @@ def rpc_realtime_stop(params: dict, ctx):
             stream.close()
         except Exception as e:
             logger.warning("stream.stop error: %s", e)
-    _realtime_state.update({
-        "rvc": None, "stream": None, "stop_event": None,
-        "thread": None, "params": None,
-    })
     status("idle")
     return {"status": "success"}
+
+
+def sounddevice_stream_type():
+    """Return sounddevice.Stream, imported lazily to avoid a hard dependency.
+
+    Used by rpc_realtime_stop to distinguish the "starting" sentinel string
+    from a real Stream handle.
+    """
+    try:
+        import sounddevice as _sd
+        return _sd.Stream
+    except Exception:
+        return type(None)
 
 
 # ---------------------------------------------------------------------------
