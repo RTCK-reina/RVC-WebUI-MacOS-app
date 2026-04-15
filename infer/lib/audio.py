@@ -96,9 +96,8 @@ def load_audio(
 
     # Estimated maximum total number of samples to pre-allocate the array
     # AV stores length in microseconds by default
-    # Over-allocate by 2x to reduce np.resize calls
     estimated_total_samples = (
-        int(container.duration * sr // 1_000_000) * 2 if sr is not None else 96000
+        int(container.duration * sr // 1_000_000) if sr is not None else 48000
     )
     decoded_audio = np.zeros(
         (
@@ -189,10 +188,32 @@ def resample_audio(
     output_container.close()
 
 
+def _audio_stream_sample_rate(audio_stream) -> int:
+    """PyAV renamed `base_rate` across versions — use whichever exists."""
+    for attr in ("sample_rate", "rate", "base_rate"):
+        val = getattr(audio_stream, attr, None)
+        if val is not None:
+            return int(val)
+    cc = getattr(audio_stream, "codec_context", None)
+    if cc is not None:
+        for attr in ("sample_rate", "rate"):
+            val = getattr(cc, attr, None)
+            if val is not None:
+                return int(val)
+    raise AttributeError("Could not determine sample rate from audio stream")
+
+
 def get_audio_properties(input_path: str) -> Tuple[int, int]:
     container = av.open(input_path)
-    audio_stream = next(s for s in container.streams if s.type == "audio")
-    channels = 1 if audio_stream.layout == "mono" else 2
-    rate = audio_stream.base_rate
-    container.close()
-    return channels, rate
+    try:
+        audio_stream = next(s for s in container.streams if s.type == "audio")
+        # PyAV 14+ uses `channels`, older versions use `layout`.
+        channels = getattr(audio_stream, "channels", None)
+        if channels is None:
+            channels = 1 if getattr(audio_stream, "layout", None) == "mono" else 2
+        else:
+            channels = int(channels)
+        rate = _audio_stream_sample_rate(audio_stream)
+        return channels, rate
+    finally:
+        container.close()

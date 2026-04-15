@@ -5,13 +5,40 @@ import logging
 logger = logging.getLogger(__name__)
 
 from infer.lib.audio import resample_audio, get_audio_properties
-from infer.lib.device import empty_device_cache
+import torch
 
 from configs import Config
 from infer.modules.uvr5.mdxnet import MDXNetDereverb
 from infer.modules.uvr5.vr import AudioPre
 
 config = Config()
+
+# File extensions to accept as audio input.
+_AUDIO_EXTS = {
+    ".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus",
+    ".aac", ".aiff", ".aif", ".wma", ".mp4", ".mov",
+}
+
+
+def _is_audio_file(path: str, *, strict: bool = False) -> bool:
+    """Return True if `path` looks like a processable audio file.
+
+    strict=True  -- directory scanning. Also skips our own .reformatted.wav
+                    temp files to avoid infinite-loop reprocessing when the
+                    user points the input dir at TEMP.
+    strict=False -- user-selected file picker paths. Only rejects obviously
+                    non-audio entries (.DS_Store, wrong extension). Files
+                    named "vocal_*" / "instrument_*" are ALLOWED because
+                    chaining (extract → dereverb → extract again) is a
+                    legitimate workflow the UI explicitly recommends.
+    """
+    name = os.path.basename(path)
+    if not name or name.startswith("."):
+        return False  # hidden files (.DS_Store, ._*, etc.)
+    if strict and name.endswith(".reformatted.wav"):
+        return False
+    ext = os.path.splitext(name)[1].lower()
+    return ext in _AUDIO_EXTS
 
 
 def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format0):
@@ -36,11 +63,28 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                 is_half=config.is_half,
             )
         if inp_root != "":
-            paths = [os.path.join(inp_root, name) for name in os.listdir(inp_root)]
+            # Directory scan: use strict filtering to avoid pulling our
+            # own temp files back into the processing queue.
+            paths = [
+                os.path.join(inp_root, name)
+                for name in os.listdir(inp_root)
+                if _is_audio_file(name, strict=True)
+            ]
         else:
-            paths = [path.name for path in paths]
+            # Individual files selected by the user: lenient filtering.
+            paths = [p.name if hasattr(p, "name") else p for p in paths]
+            paths = [p for p in paths if _is_audio_file(p, strict=False)]
+        if not paths:
+            infos.append("No valid audio files to process.")
+            yield "\n".join(infos)
+            return
         for path in paths:
-            inp_path = os.path.join(inp_root, path)
+            # `path` is already absolute if built from inp_root above, or the
+            # user-supplied file path in the 'paths' branch. Don't re-join.
+            if inp_root and not os.path.isabs(path):
+                inp_path = os.path.join(inp_root, path)
+            else:
+                inp_path = path
             need_reformat = 1
             done = 0
             try:
@@ -74,12 +118,12 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                     )
                 infos.append("%s->Success" % (os.path.basename(inp_path)))
                 yield "\n".join(infos)
-            except Exception:
+            except:
                 infos.append(
                     "%s->%s" % (os.path.basename(inp_path), traceback.format_exc())
                 )
                 yield "\n".join(infos)
-    except Exception:
+    except:
         infos.append(traceback.format_exc())
         yield "\n".join(infos)
     finally:
@@ -90,7 +134,12 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
             else:
                 del pre_fun.model
                 del pre_fun
-        except Exception:
-            logger.exception("failed to release pre_fun")
-        empty_device_cache()
+        except:
+            traceback.print_exc()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("Executed torch.cuda.empty_cache()")
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+            logger.info("Executed torch.mps.empty_cache()")
     yield "\n".join(infos)

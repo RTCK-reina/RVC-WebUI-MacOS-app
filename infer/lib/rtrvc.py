@@ -1,8 +1,10 @@
 from io import BytesIO
-import logging
 import os
 from typing import Union, Literal, Optional
 from pathlib import Path
+
+# Must precede fairseq import — see infer/lib/torch_compat.py for rationale.
+from infer.lib import torch_compat  # noqa: F401
 
 import fairseq
 import faiss
@@ -14,8 +16,6 @@ from torchaudio.transforms import Resample
 
 from rvc.f0 import Generator
 from rvc.synthesizer import load_synthesizer
-
-logger = logging.getLogger(__name__)
 
 
 class RVC:
@@ -30,8 +30,17 @@ class RVC:
         device: str = "cpu",
         use_jit: bool = False,
         is_half: bool = False,
+        is_dml: bool = False,
     ) -> None:
-        # macOS build: no DirectML fallback (see gui.py/RVC for removed flag).
+        if is_dml:
+
+            def forward_dml(ctx, x, scale):
+                ctx.scale = scale
+                res = x.clone().detach()
+                return res
+
+            fairseq.modules.grad_multiply.GradMultiply.forward = forward_dml
+
         self.device = device
         self.f0_up_key = key
         self.formant_shift = formant
@@ -64,8 +73,18 @@ class RVC:
             Path(os.environ["rmvpe_root"]), is_half, 0, device, self.window, self.sr
         )
 
+        # Resolve hubert_base.pt path (bundle-aware — see utils._hubert_path).
+        _hubert_env = os.environ.get("hubert_path")
+        if _hubert_env and os.path.exists(_hubert_env):
+            _hubert = _hubert_env
+        elif os.environ.get("RVC_BASE_DIR"):
+            _hubert = os.path.join(
+                os.environ["RVC_BASE_DIR"], "assets", "hubert", "hubert_base.pt"
+            )
+        else:
+            _hubert = "assets/hubert/hubert_base.pt"
         models, _, _ = fairseq.checkpoint_utils.load_model_ensemble_and_task(
-            ["assets/hubert/hubert_base.pt"],
+            [_hubert],
             suffix="",
         )
         hubert_model = models[0]
@@ -103,7 +122,11 @@ class RVC:
             self.net_g.infer = self.net_g.forward
             self.net_g.eval().to(self.device)
 
-        if self.use_jit and not (self.is_half and "cpu" in str(self.device)):
+        if (
+            self.use_jit
+            and not is_dml
+            and not (self.is_half and "cpu" in str(self.device))
+        ):
             set_jit_model()
         else:
             set_default_model()
@@ -172,9 +195,8 @@ class RVC:
                         * self.index_rate
                         + (1 - self.index_rate) * feats[0][skip_head // 2 :]
                     )
-        except Exception:
-            # realtime path: never crash the audio loop, but leave a breadcrumb
-            logger.exception("faiss retrieval failed; skipping index contribution")
+        except:
+            pass
 
         p_len = input_wav.shape[0] // self.window
         factor = pow(2, self.formant_shift / 12)
