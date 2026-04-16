@@ -59,6 +59,8 @@ class VC:
         if self.cpt is not None:
             del self.cpt
             self.cpt = None
+        if self.pipeline is not None:
+            self.pipeline = None
         self.n_spk = self.tgt_sr = self.if_f0 = self.version = None
         self._loaded_sid = None
         self._loaded_result = None

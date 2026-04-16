@@ -193,9 +193,10 @@ struct SingleInferenceView: View {
         isRunning = true
         defer { isRunning = false }
 
-        // Load model if different from previously loaded one. We keep the
-        // full response so we can forward the resolved index_path to the
-        // vc_single call below — previously both `file_index` and
+        // Always call load_model on each inference; the backend is idempotent
+        // (returns cached state when the same model is already loaded, A-1).
+        // We keep the full response so we can forward the resolved index_path
+        // to the vc_single call below — previously both `file_index` and
         // `file_index2` were hard-coded to "" and the FAISS index was never
         // actually consulted on the Swift path, silently wasting the
         // "Index Rate" slider the UI exposes (A-5).
