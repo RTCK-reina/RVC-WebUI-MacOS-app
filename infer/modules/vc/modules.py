@@ -15,6 +15,41 @@ from .pipeline import Pipeline
 from .utils import get_index_path_from_model, load_hubert
 
 
+def _try_load_onnx(pth_path: str, device: str):
+    """pth ファイルと同じディレクトリに .onnx ファイルがあれば OnnxSynthesizer を返す。
+
+    onnxruntime が未インストールの場合や ONNX ファイルが存在しない場合は None を返し、
+    PyTorch 推論にフォールバックする。
+
+    device 文字列が "mps" や "cpu" の場合は CoreML EP を試み、
+    CUDA の場合は CUDAExecutionProvider を試みる。
+    """
+    onnx_path = os.path.splitext(pth_path)[0] + ".onnx"
+    if not os.path.exists(onnx_path):
+        return None
+    try:
+        from rvc.onnx.infer import OnnxSynthesizer
+
+        if "mps" in str(device) or str(device) == "cpu":
+            onnx_device = "coreml"
+        elif "cuda" in str(device):
+            onnx_device = "cuda"
+        else:
+            onnx_device = "cpu"
+
+        model = OnnxSynthesizer(onnx_path, device=onnx_device)
+        logger.info(
+            "ONNX 推論を有効化: %s (device=%s)", onnx_path, onnx_device
+        )
+        return model
+    except Exception:
+        logger.warning(
+            "ONNX 推論の初期化に失敗しました（PyTorch にフォールバック）:\n%s",
+            traceback.format_exc(),
+        )
+        return None
+
+
 class VC:
     def __init__(self, config):
         self.n_spk = None
@@ -64,6 +99,11 @@ class VC:
         else:
             self.net_g = self.net_g.float()
         self.pipeline = Pipeline(self.tgt_sr, self.config)
+
+        # ONNX モデルが存在する場合はパイプラインにアタッチ（設定で use_onnx=True のとき）
+        use_onnx = getattr(self.config, "use_onnx", False)
+        if use_onnx:
+            self.pipeline.onnx_net_g = _try_load_onnx(person, self.config.device)
 
         n_spk = self.cpt["config"][-3]
         index_path = get_index_path_from_model(sid)
@@ -146,6 +186,11 @@ class VC:
         else:
             self.net_g = self.net_g.float()
         self.pipeline = Pipeline(self.tgt_sr, self.config)
+
+        # ONNX モデルが存在する場合はパイプラインにアタッチ（設定で use_onnx=True のとき）
+        use_onnx = getattr(self.config, "use_onnx", False)
+        if use_onnx:
+            self.pipeline.onnx_net_g = _try_load_onnx(person, self.config.device)
 
         n_spk = self.cpt["config"][-3]
         index = {"value": get_index_path_from_model(sid), "__type__": "update"}

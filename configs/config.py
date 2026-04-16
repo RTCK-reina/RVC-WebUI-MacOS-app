@@ -124,6 +124,7 @@ class Config:
         self.device = "cuda:0"
         self.is_half = True
         self.use_jit = False
+        self.use_onnx = os.environ.get("RVC_USE_ONNX", "").lower() in ("1", "true", "yes")
         self.n_cpu = 0
         self.gpu_name = None
         self.json_config = self.load_config_json()
