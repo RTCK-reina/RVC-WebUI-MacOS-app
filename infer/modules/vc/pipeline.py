@@ -65,6 +65,10 @@ class Pipeline(object):
         self.t_max = self.sr * self.x_max  # 免查询时长阈值
         self.device = config.device
 
+        # ONNX 推論モデル（OnnxSynthesizer インスタンス）。
+        # 外部から load_vc() 等でセットされる。None の場合は PyTorch 推論を使用。
+        self.onnx_net_g = None
+
         self.f0_gen = Generator(
             Path(os.environ["rmvpe_root"]),
             self.is_half,
@@ -165,20 +169,37 @@ class Pipeline(object):
             feats = feats.to(feats0.dtype)
         p_len = torch.tensor([p_len], device=self.device).long()
         with torch.no_grad():
-            audio1 = (
-                (
-                    net_g.infer(
-                        feats,
-                        p_len,
-                        sid,
-                        pitch=pitch,
-                        pitchf=pitchf,
+            if self.onnx_net_g is not None:
+                # ONNX 推論パス（CoreML EP で ANE オフロード可能）
+                # OnnxSynthesizer.infer() は CPU Tensor を受け取り、
+                # PyTorch の net_g.infer() と同じ [1, 1, samples] Tensor を返す
+                audio1 = (
+                    self.onnx_net_g.infer(
+                        feats.cpu().float(),
+                        p_len.cpu(),
+                        sid.cpu(),
+                        pitch=pitch.cpu() if pitch is not None else None,
+                        pitchf=pitchf.cpu() if pitchf is not None else None,
                     )[0, 0]
+                    .float()
+                    .numpy()
                 )
-                .data.cpu()
-                .float()
-                .numpy()
-            )
+            else:
+                # PyTorch 推論パス（フォールバック）
+                audio1 = (
+                    (
+                        net_g.infer(
+                            feats,
+                            p_len,
+                            sid,
+                            pitch=pitch,
+                            pitchf=pitchf,
+                        )[0, 0]
+                    )
+                    .data.cpu()
+                    .float()
+                    .numpy()
+                )
         del feats, p_len, padding_mask
         t2 = time()
         times[0] += t1 - t0

@@ -1,6 +1,7 @@
 import os
 import traceback
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -78,46 +79,52 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
             infos.append("No valid audio files to process.")
             yield "\n".join(infos)
             return
+
+        # 絶対パスに揃える
+        abs_paths = []
         for path in paths:
-            # `path` is already absolute if built from inp_root above, or the
-            # user-supplied file path in the 'paths' branch. Don't re-join.
             if inp_root and not os.path.isabs(path):
-                inp_path = os.path.join(inp_root, path)
+                abs_paths.append(os.path.join(inp_root, path))
             else:
-                inp_path = path
-            need_reformat = 1
-            done = 0
+                abs_paths.append(path)
+
+        def _preprocess_file(inp_path):
+            """ファイルを 44100Hz/ステレオ に変換する。
+
+            変換不要なら元パスをそのまま返す。変換した場合は一時パスを返す。
+            戻り値: (処理済みパス, 一時ファイルであるか)
+            resample_audio は PyAV ベースの I/O バウンド処理なので
+            ThreadPoolExecutor で安全に並列化できる。
+            """
             try:
                 channels, rate = get_audio_properties(inp_path)
-
-                # Check the audio stream's properties
                 if channels == 2 and rate == 44100:
-                    pre_fun._path_audio_(
-                        inp_path, save_root_ins, save_root_vocal, format0
-                    )
-                    need_reformat = 0
-                    done = 1
+                    return inp_path, False  # 変換不要
             except Exception as e:
-                need_reformat = 1
-                logger.warning(f"Exception {e} occured. Will reformat")
-            if need_reformat == 1:
-                tmp_path = "%s/%s.reformatted.wav" % (
-                    os.path.join(os.environ["TEMP"]),
-                    os.path.basename(inp_path),
-                )
-                resample_audio(inp_path, tmp_path, "pcm_s16le", "s16", 44100, "stereo")
-                # NOTE: the upstream implementation deleted `inp_path` here with
-                # os.remove(). That was destructive — inp_path may point at a
-                # user-owned file outside the app's temp space (a song the user
-                # dropped into the picker, or the output of a previous pass).
-                # Silently wiping user data is never acceptable; we keep the
-                # reformatted copy in TEMP and leave the original untouched.
-                inp_path = tmp_path
+                logger.warning(f"Exception {e} occurred. Will reformat {inp_path}")
+
+            tmp_path = "%s/%s.reformatted.wav" % (
+                os.path.join(os.environ["TEMP"]),
+                os.path.basename(inp_path),
+            )
+            resample_audio(inp_path, tmp_path, "pcm_s16le", "s16", 44100, "stereo")
+            # NOTE: do NOT remove inp_path here — it may point at a user-owned
+            # file outside the app's temp space. We keep the reformatted copy in
+            # TEMP and leave the original untouched.
+            return tmp_path, True
+
+        # I/O バウンドなフォーマット変換を ThreadPoolExecutor で並列化。
+        # モデル推論（GPU/MPS）はシリアルで安全に実行する。
+        n_workers = min(len(abs_paths), 4)
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            preproc_results = list(pool.map(_preprocess_file, abs_paths))
+
+        # モデル推論（シリアル）
+        for inp_path, _was_reformatted in preproc_results:
             try:
-                if done == 0:
-                    pre_fun._path_audio_(
-                        inp_path, save_root_ins, save_root_vocal, format0
-                    )
+                pre_fun._path_audio_(
+                    inp_path, save_root_ins, save_root_vocal, format0
+                )
                 infos.append("%s->Success" % (os.path.basename(inp_path)))
                 yield "\n".join(infos)
             except:

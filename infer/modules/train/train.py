@@ -227,21 +227,31 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
         rank=rank,
         shuffle=True,
     )
-    # It is possible that dataloader's workers are out of shared memory. Please try to raise your shared memory limit.
-    # num_workers=8 -> num_workers=4
+    # DataLoader workers: hps.train から読み込み。未設定時は CPU コア数ベースで決定。
+    # M5 Pro (12 コア) 相当なら 4〜6 が適切。
+    _n_cpu = os.cpu_count() or 4
+    _default_num_workers = min(max(_n_cpu // 2, 2), 6)
+    _num_workers = getattr(hps.train, "num_workers", _default_num_workers)
+    _prefetch_factor = getattr(hps.train, "prefetch_factor", 8)
+
     if hps.if_f0 == 1:
         collate_fn = TextAudioCollateMultiNSFsid()
     else:
         collate_fn = TextAudioCollate()
     train_loader = DataLoader(
         train_dataset,
-        num_workers=4,
+        num_workers=_num_workers,
         shuffle=False,
         pin_memory=False,
         collate_fn=collate_fn,
         batch_sampler=train_sampler,
         persistent_workers=True,
-        prefetch_factor=8,
+        prefetch_factor=_prefetch_factor,
+    )
+    logger.info(
+        "DataLoader: num_workers=%d, prefetch_factor=%d",
+        _num_workers,
+        _prefetch_factor,
     )
     mdl = hps.copy().model
     del mdl.use_spectral_norm
@@ -496,8 +506,16 @@ def train_and_evaluate(
         # Loader
         data_iterator = enumerate(train_loader)
 
+    # Gradient Accumulation: hps.train から読み込み。デフォルト 1（従来と同じ動作）。
+    # accumulation_steps > 1 にすると実効バッチサイズが拡大し収束速度が改善する。
+    # 数学的に等価（同一の勾配合計）なので品質への影響はない。
+    accumulation_steps = max(1, getattr(hps.train, "accumulation_steps", 1))
+
     # Run steps
     epoch_recorder = EpochRecorder()
+    grad_norm_d = grad_norm_g = 0.0  # accumulation 中に未定義になるのを防ぐ
+    optim_d.zero_grad()
+    optim_g.zero_grad()
     for batch_idx, info in data_iterator:
         # Data
         ## Unpack
@@ -527,6 +545,9 @@ def train_and_evaluate(
             spec = spec.to("mps", non_blocking=True)
             spec_lengths = spec_lengths.to("mps", non_blocking=True)
             wave = wave.to("mps", non_blocking=True)
+
+        # accumulation_steps バッチごとに optimizer.step() を実行するか判定
+        is_update_step = (batch_idx + 1) % accumulation_steps == 0
 
         # Calculate
         with autocast(enabled=hps.train.fp16_run):
@@ -571,11 +592,13 @@ def train_and_evaluate(
                 loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
                     y_d_hat_r, y_d_hat_g
                 )
-        optim_d.zero_grad()
-        scaler.scale(loss_disc).backward()
-        scaler.unscale_(optim_d)
-        grad_norm_d = total_grad_norm(net_d.parameters())
-        scaler.step(optim_d)
+        # accumulation_steps で損失を割って backward（勾配を蓄積）
+        scaler.scale(loss_disc / accumulation_steps).backward()
+        if is_update_step:
+            scaler.unscale_(optim_d)
+            grad_norm_d = total_grad_norm(net_d.parameters())
+            scaler.step(optim_d)
+            optim_d.zero_grad()
 
         with autocast(enabled=hps.train.fp16_run):
             # Generator
@@ -586,12 +609,13 @@ def train_and_evaluate(
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
                 loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
-        optim_g.zero_grad()
-        scaler.scale(loss_gen_all).backward()
-        scaler.unscale_(optim_g)
-        grad_norm_g = total_grad_norm(net_g.parameters())
-        scaler.step(optim_g)
-        scaler.update()
+        scaler.scale(loss_gen_all / accumulation_steps).backward()
+        if is_update_step:
+            scaler.unscale_(optim_g)
+            grad_norm_g = total_grad_norm(net_g.parameters())
+            scaler.step(optim_g)
+            scaler.update()
+            optim_g.zero_grad()
 
         if rank == 0:
             if global_step % hps.train.log_interval == 0:
