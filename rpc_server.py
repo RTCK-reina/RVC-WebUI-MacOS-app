@@ -10,6 +10,7 @@ No Gradio, no HTTP server, no network calls.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import sys
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
@@ -71,7 +73,15 @@ except Exception:
     pass
 
 if sys.platform == "darwin":
-    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    # E-1: PYTORCH_ENABLE_MPS_FALLBACK used to be set unconditionally, which
+    # silently redirects any MPS-unsupported op to CPU. That keeps things
+    # "running" but masks performance cliffs (e.g. a kernel that silently
+    # round-trips to CPU on every call). Opt-in now: the developer sets
+    # RVC_MPS_DEBUG=1 when they want the fallback net, default is strict
+    # so missing MPS ops surface as a real RuntimeError instead of a slow
+    # silent degradation.
+    if os.environ.get("RVC_MPS_DEBUG") == "1":
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 # Load env defaults (sha256 checksums, etc). These files ship inside the bundle.
@@ -414,46 +424,35 @@ def rpc_vc_single(params: dict) -> dict:
     _register_task(task_id)  # registered for status visibility, no cancel honored
     app_state.status("inferring")
     try:
+        # B-2: the previous implementation ran vc_single inside a fresh
+        # daemon Thread and busy-waited on `while t.is_alive(): t.join(0.25)`
+        # solely so it could emit a "推論中…" progress tick every second.
+        # Now that the RPC is already dispatched from _blocking_executor
+        # (on its own worker thread), spinning up another thread here is
+        # pure overhead — the dispatcher thread is free to block on
+        # vc_single directly. We keep the up-front "Loading audio" and
+        # "推論中…" progress notifications so the UI bar still moves before
+        # the synchronous call starts.
         emit_progress(task_id, 5, "Loading audio", "inference")
+        emit_progress(task_id, 40, "推論中…", "inference")
 
-        # Run inference in a worker thread purely so the RPC dispatcher stays
-        # responsive (resource_stats notifications keep flowing). Cancellation
-        # is intentionally NOT honored here: a single-file PyTorch inference
-        # cannot be safely interrupted, so the UI does not expose a cancel
-        # button for this operation.
-        result_box: dict = {}
-        err_box: dict = {}
-
-        def runner():
-            try:
-                result_box["result"] = app_state.vc.vc_single(
-                    params.get("sid_index", 0),
-                    input_path,
-                    int(params.get("f0_up_key", 0)),
-                    None,
-                    params.get("f0_method", "rmvpe"),
-                    params.get("file_index", ""),
-                    params.get("file_index2", ""),
-                    float(params.get("index_rate", 0.75)),
-                    int(params.get("filter_radius", 3)),
-                    int(params.get("resample_sr", 0)),
-                    float(params.get("rms_mix_rate", 0.25)),
-                    float(params.get("protect", 0.33)),
-                )
-            except BaseException as e:  # noqa: BLE001
-                err_box["error"] = e
-
-        t = threading.Thread(target=runner, daemon=True)
-        t.start()
-        tick = 0
-        while t.is_alive():
-            t.join(timeout=0.25)
-            tick += 1
-            if tick % 4 == 0:  # ~1s
-                emit_progress(task_id, 40, "推論中…", "inference")
-        if "error" in err_box:
-            raise err_box["error"]
-        info, opt = result_box["result"]
+        # Cancellation is intentionally NOT honored for single-file inference:
+        # a single PyTorch forward pass cannot be safely interrupted, and the
+        # UI does not expose a cancel button for this operation.
+        info, opt = app_state.vc.vc_single(
+            params.get("sid_index", 0),
+            input_path,
+            int(params.get("f0_up_key", 0)),
+            None,
+            params.get("f0_method", "rmvpe"),
+            params.get("file_index", ""),
+            params.get("file_index2", ""),
+            float(params.get("index_rate", 0.75)),
+            int(params.get("filter_radius", 3)),
+            int(params.get("resample_sr", 0)),
+            float(params.get("rms_mix_rate", 0.25)),
+            float(params.get("protect", 0.33)),
+        )
         if opt is None:
             return {"status": "error", "info": info}
 
@@ -497,39 +496,73 @@ def rpc_vc_multi(params: dict) -> dict:
         if total == 0:
             return {"status": "error", "info": "No input files"}
 
+        # B-3: the VC inference itself is kept strictly sequential because
+        # net_g / Pipeline / GPU allocator are shared state and not
+        # thread-safe. However the post-inference `save_audio` work
+        # (resampling + encoding + disk write) is independent between
+        # files and can happily run on I/O threads while the next file is
+        # being inferred. A small ThreadPoolExecutor (2 workers) is enough
+        # to overlap the encode of file N with the forward pass of file
+        # N+1 — more workers would only help for very large outputs, and
+        # risks contending for the disk.
+        save_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vc-multi-save")
+        save_futures: list = []
         results = []
-        for i, path in enumerate(all_paths):
-            if task.cancel_event.is_set():
-                return {"status": "cancelled", "completed": i, "total": total}
-            emit_progress(
-                task_id,
-                (i / total) * 100.0,
-                f"({i + 1}/{total}) {Path(path).name}",
-                "batch",
-            )
-            info, opt = app_state.vc.vc_single(
-                params.get("sid_index", 0),
-                path,
-                int(params.get("f0_up_key", 0)),
-                None,
-                params.get("f0_method", "rmvpe"),
-                params.get("file_index", ""),
-                params.get("file_index2", ""),
-                float(params.get("index_rate", 0.75)),
-                int(params.get("filter_radius", 3)),
-                int(params.get("resample_sr", 0)),
-                float(params.get("rms_mix_rate", 0.25)),
-                float(params.get("protect", 0.33)),
-            )
-            if opt is not None:
-                tgt_sr, audio_opt = opt
-                model_stem = Path(sid).stem if sid else "model"
-                out_name = f"{Path(path).stem}_{model_stem}.{fmt}"
-                out_path = str(Path(out_root) / out_name)
-                save_audio(out_path, audio_opt, tgt_sr, f32=True, format=fmt)
-                results.append({"input": path, "output": out_path, "info": info})
-            else:
-                results.append({"input": path, "output": None, "info": info})
+        try:
+            for i, path in enumerate(all_paths):
+                if task.cancel_event.is_set():
+                    # Cancel not-yet-started encodes so we don't block in the
+                    # shutdown below waiting for a queue of orphaned futures.
+                    for fut in save_futures:
+                        fut.cancel()
+                    return {"status": "cancelled", "completed": i, "total": total}
+                emit_progress(
+                    task_id,
+                    (i / total) * 100.0,
+                    f"({i + 1}/{total}) {Path(path).name}",
+                    "batch",
+                )
+                info, opt = app_state.vc.vc_single(
+                    params.get("sid_index", 0),
+                    path,
+                    int(params.get("f0_up_key", 0)),
+                    None,
+                    params.get("f0_method", "rmvpe"),
+                    params.get("file_index", ""),
+                    params.get("file_index2", ""),
+                    float(params.get("index_rate", 0.75)),
+                    int(params.get("filter_radius", 3)),
+                    int(params.get("resample_sr", 0)),
+                    float(params.get("rms_mix_rate", 0.25)),
+                    float(params.get("protect", 0.33)),
+                )
+                if opt is not None:
+                    tgt_sr, audio_opt = opt
+                    model_stem = Path(sid).stem if sid else "model"
+                    out_name = f"{Path(path).stem}_{model_stem}.{fmt}"
+                    out_path = str(Path(out_root) / out_name)
+                    # save_audio only reads audio_opt and builds its own
+                    # output buffers; no in-place mutation occurs, so the
+                    # copy is unnecessary overhead for large batches.
+                    save_futures.append(
+                        save_pool.submit(
+                            save_audio, out_path, audio_opt, tgt_sr,
+                            True, fmt,  # f32=True, format=fmt
+                        )
+                    )
+                    results.append({"input": path, "output": out_path, "info": info})
+                else:
+                    results.append({"input": path, "output": None, "info": info})
+            # Wait for pending encodes before returning; surface the first
+            # encoding error if any.
+            for fut in save_futures:
+                fut.result()
+        finally:
+            # wait=False: cancellation (handled by the early return above) and
+            # exceptions must not block the RPC response on pending encodes.
+            # Already-running saves finish on their own; cancelled ones were
+            # already marked above so they won't start.
+            save_pool.shutdown(wait=False)
         emit_progress(task_id, 100, f"Completed {total} files", "batch")
         return {"status": "success", "results": results, "output_dir": out_root}
     finally:
@@ -928,7 +961,20 @@ BLOCKING_METHODS = {
     "train_all",
 }
 
-_blocking_worker = threading.Lock()
+# B-1: single-slot ThreadPoolExecutor replaces the previous
+# `_blocking_worker = Lock()` + per-dispatch `threading.Thread(...).start()`
+# pattern. Behaviour is equivalent (strict serialization — model and GPU
+# state are not thread-safe) but the executor reuses a single worker thread
+# instead of spawning a fresh OS thread per RPC, and gives us a proper
+# Future handle so the dispatch side can wait on `future.result()` rather
+# than spinning on `while thread.is_alive(): thread.join(0.25)` (B-2).
+_blocking_executor = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="rpc-blocking"
+)
+# Best-effort shutdown on normal interpreter exit so the worker thread does
+# not prevent the process from terminating. `wait=False` lets an in-flight
+# RPC keep running; the hook just stops accepting new submissions.
+atexit.register(_blocking_executor.shutdown, wait=False)
 
 
 def _dispatch(request: dict) -> None:
@@ -941,9 +987,13 @@ def _dispatch(request: dict) -> None:
         return
     try:
         if method in BLOCKING_METHODS:
-            # Serialize blocking ops so we don't load two models at once.
-            with _blocking_worker:
-                result = fn(params)
+            # Submit to the dedicated single-slot executor. max_workers=1 is
+            # deliberate: the VC model and GPU allocator are shared state
+            # that has never been audited for concurrent access. Future
+            # work can raise the cap after adding model-scoped locks
+            # (plan file PR #5 main_concerns #1).
+            future = _blocking_executor.submit(fn, params)
+            result = future.result()
         else:
             result = fn(params)
         send_response(req_id, result)
@@ -954,6 +1004,10 @@ def _dispatch(request: dict) -> None:
 
 
 def _handle_request_async(request: dict) -> None:
+    # The dispatch wrapper still runs on a background thread so that
+    # non-blocking calls (list_models, cancel, resource_stats observers) can
+    # proceed while a BLOCKING op is queued on the executor — but the
+    # heavy work itself runs in the pool, not in freshly-spawned threads.
     method = request.get("method", "")
     if method in BLOCKING_METHODS:
         threading.Thread(target=_dispatch, args=(request,), daemon=True).start()
