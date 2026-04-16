@@ -30,9 +30,22 @@ that surface to the specific fairseq loader.
 from __future__ import annotations
 
 import contextlib
+import threading
 from typing import Iterator
 
 import torch
+
+# Module-level lock and reference count so that concurrent legacy_load()
+# blocks (from worker threads in rpc_server) patch torch.load exactly once
+# and restore it deterministically when the last caller exits.
+_legacy_load_lock = threading.Lock()
+_legacy_load_count = 0
+_legacy_load_original: object = None
+
+
+def _patched_load(*args: object, **kwargs: object) -> object:
+    kwargs.setdefault("weights_only", False)  # type: ignore[attr-defined]
+    return _legacy_load_original(*args, **kwargs)  # type: ignore[misc]
 
 
 @contextlib.contextmanager
@@ -40,23 +53,30 @@ def legacy_load() -> Iterator[None]:
     """Temporarily restore ``torch.load``'s pre-2.6 default of
     ``weights_only=False`` for the duration of the ``with`` block.
 
-    Reentrancy-safe: nested ``with legacy_load()`` blocks simply stack the
-    patch and unwind it on exit. Any explicit ``weights_only=`` kwarg passed
-    to ``torch.load`` by the caller wins over the patched default.
+    Thread-safe: concurrent calls from different threads share a single patch
+    (installed on first enter, restored when the last caller exits). A
+    module-level lock guards the patch/restore transitions so that worker
+    threads in rpc_server cannot corrupt each other's torch.load reference.
 
-    The patch mutates ``torch.load`` in place; callers should wrap only the
-    narrowest possible region (ideally a single ``load_checkpoint_to_cpu`` /
-    ``load_model_ensemble_and_task`` call) to avoid widening the pickle
-    deserialization surface.
+    Any explicit ``weights_only=`` kwarg passed to ``torch.load`` by the
+    caller wins over the patched default.
+
+    Callers should wrap only the narrowest possible region (ideally a single
+    ``load_checkpoint_to_cpu`` / ``load_model_ensemble_and_task`` call) to
+    avoid widening the pickle deserialization surface.
     """
-    original_load = torch.load
+    global _legacy_load_count, _legacy_load_original
 
-    def _patched_load(*args, **kwargs):  # type: ignore[no-untyped-def]
-        kwargs.setdefault("weights_only", False)
-        return original_load(*args, **kwargs)
-
-    torch.load = _patched_load  # type: ignore[assignment]
+    with _legacy_load_lock:
+        if _legacy_load_count == 0:
+            _legacy_load_original = torch.load
+            torch.load = _patched_load  # type: ignore[assignment]
+        _legacy_load_count += 1
     try:
         yield
     finally:
-        torch.load = original_load  # type: ignore[assignment]
+        with _legacy_load_lock:
+            _legacy_load_count -= 1
+            if _legacy_load_count == 0:
+                torch.load = _legacy_load_original  # type: ignore[assignment]
+                _legacy_load_original = None

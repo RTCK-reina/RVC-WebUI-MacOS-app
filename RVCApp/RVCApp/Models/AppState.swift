@@ -86,9 +86,9 @@ final class AppState: ObservableObject {
     /// Priority:
     ///   1. RVC_PYTHON env var (must point at an executable file)
     ///   2. Well-known macOS interpreter locations
-    ///   3. Last-resort fallback to /usr/bin/python3 (always present on
-    ///      modern macOS; if absent the launcher will surface a real ENOENT
-    ///      rather than the misleading literal "env python3" path)
+    ///   3. Last-resort fallback to /usr/bin/python3 (a common location on
+    ///      macOS, though not guaranteed; if absent the launcher will surface
+    ///      a real ENOENT rather than the misleading literal "env python3" path)
     private func resolveDevPython() -> String {
         let fm = FileManager.default
 

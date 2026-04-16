@@ -792,6 +792,14 @@ def rpc_realtime_start(params: dict, ctx):
     This is a minimal viable implementation — for production, further tuning
     of block size, crossfading, and noise reduction is needed.
     """
+    # Create stop_event before the reservation so that a concurrent stop()
+    # can signal it (via _realtime_state["stop_event"].set()) even while the
+    # heavy init below is in progress.  Without this, stop() would see the
+    # "starting" sentinel, clear the state, and return success — but start()
+    # would later commit the real stream, leaving an orphaned audio stream
+    # that the UI believes is already stopped.
+    stop_event = threading.Event()
+
     # Reservation pattern: briefly take the lock to check-and-claim the
     # "stream" slot, then do the heavy RVC/sounddevice init outside the
     # lock so that concurrent update_params/stop don't stall for seconds.
@@ -799,6 +807,7 @@ def rpc_realtime_start(params: dict, ctx):
         if _realtime_state["stream"] is not None:
             return {"status": "error", "error": "already running"}
         _realtime_state["stream"] = "starting"  # reservation sentinel
+        _realtime_state["stop_event"] = stop_event  # allow stop() to signal during init
 
     import numpy as np
     import sounddevice as sd
@@ -845,8 +854,6 @@ def rpc_realtime_start(params: dict, ctx):
     extra_frame_16k = int(2.5 * 16000)
 
     input_buffer = np.zeros(block_frame_16k + extra_frame_16k, dtype=np.float32)
-
-    stop_event = threading.Event()
 
     from torchaudio.transforms import Resample
 
@@ -908,14 +915,28 @@ def rpc_realtime_start(params: dict, ctx):
         # Release the reservation so the next start() call can proceed.
         with _realtime_lock:
             _realtime_state["stream"] = None
+            _realtime_state["stop_event"] = None
         return {"status": "error", "error": f"stream.start failed: {e}"}
 
+    # Re-check under the lock: a concurrent stop() may have fired during the
+    # heavy init above, set stop_event, and cleared the state.  If so, abort
+    # and close the stream rather than committing an orphaned audio handle.
     with _realtime_lock:
-        _realtime_state["rvc"] = rvc
-        _realtime_state["stream"] = stream  # replace "starting" sentinel
-        _realtime_state["stop_event"] = stop_event
-        _realtime_state["params"] = dict(params)
-        _realtime_state["sample_rate"] = sample_rate
+        was_stopped = stop_event.is_set()
+        if not was_stopped:
+            _realtime_state["rvc"] = rvc
+            _realtime_state["stream"] = stream  # replace "starting" sentinel
+            # stop_event is already stored from the reservation; keep it
+            _realtime_state["params"] = dict(params)
+            _realtime_state["sample_rate"] = sample_rate
+
+    if was_stopped:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
+        return {"status": "error", "error": "start was cancelled by a concurrent stop"}
 
     status("realtime")
     return {"status": "success", "sample_rate": sample_rate, "model_sr": int(sr_model)}
