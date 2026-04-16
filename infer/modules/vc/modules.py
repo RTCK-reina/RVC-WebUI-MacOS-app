@@ -45,20 +45,30 @@ class VC:
         is wasted work and MPS in particular forces a full reallocation
         on the next inference.
         """
-        if self.net_g is None and self.hubert_model is None:
+        if (
+            self.net_g is None
+            and self.hubert_model is None
+            and self.pipeline is None
+        ):
             return
         logger.info("Clean model cache")
         if self.hubert_model is not None:
             del self.hubert_model
             self.hubert_model = None
         if self.net_g is not None:
-            # self.cpt may still be needed by Pipeline if it is reused, but
-            # load_vc rebuilds both so tearing it down here is safe.
             del self.net_g
             self.net_g = None
         if self.cpt is not None:
             del self.cpt
             self.cpt = None
+        # Pipeline holds f0_gen (which keeps RMVPE weights on the device) and
+        # the FAISS index cache (A-2). Leaving it alive through an unload
+        # leaks GPU memory equal to the RMVPE weights + big_npy, and is why
+        # Copilot flagged this in PR #4 review. Drop it here so sid="" or a
+        # switch-to-different-sid truly releases the prior model's state.
+        if self.pipeline is not None:
+            del self.pipeline
+            self.pipeline = None
         self.n_spk = self.tgt_sr = self.if_f0 = self.version = None
         self._loaded_sid = None
         self._loaded_result = None
