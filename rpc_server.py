@@ -10,6 +10,7 @@ No Gradio, no HTTP server, no network calls.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import logging
 import os
@@ -502,6 +503,10 @@ def rpc_vc_multi(params: dict) -> dict:
         try:
             for i, path in enumerate(all_paths):
                 if task.cancel_event.is_set():
+                    # Cancel not-yet-started encodes so we don't block in the
+                    # shutdown below waiting for a queue of orphaned futures.
+                    for fut in save_futures:
+                        fut.cancel()
                     return {"status": "cancelled", "completed": i, "total": total}
                 emit_progress(
                     task_id,
@@ -528,13 +533,12 @@ def rpc_vc_multi(params: dict) -> dict:
                     model_stem = Path(sid).stem if sid else "model"
                     out_name = f"{Path(path).stem}_{model_stem}.{fmt}"
                     out_path = str(Path(out_root) / out_name)
-                    # save_audio mutates audio_opt in place during encoding
-                    # on some formats; copy so the async write doesn't race
-                    # with the next iteration's numpy buffers. The copy cost
-                    # is negligible next to encode+disk.
+                    # save_audio only reads audio_opt and builds its own
+                    # output buffers; no in-place mutation occurs, so the
+                    # copy is unnecessary overhead for large batches.
                     save_futures.append(
                         save_pool.submit(
-                            save_audio, out_path, audio_opt.copy(), tgt_sr,
+                            save_audio, out_path, audio_opt, tgt_sr,
                             True, fmt,  # f32=True, format=fmt
                         )
                     )
@@ -546,7 +550,11 @@ def rpc_vc_multi(params: dict) -> dict:
             for fut in save_futures:
                 fut.result()
         finally:
-            save_pool.shutdown(wait=True)
+            # wait=False: cancellation (handled by the early return above) and
+            # exceptions must not block the RPC response on pending encodes.
+            # Already-running saves finish on their own; cancelled ones were
+            # already marked above so they won't start.
+            save_pool.shutdown(wait=False)
         emit_progress(task_id, 100, f"Completed {total} files", "batch")
         return {"status": "success", "results": results, "output_dir": out_root}
     finally:
@@ -955,6 +963,10 @@ BLOCKING_METHODS = {
 _blocking_executor = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="rpc-blocking"
 )
+# Best-effort shutdown on normal interpreter exit so the worker thread does
+# not prevent the process from terminating. `wait=False` lets an in-flight
+# RPC keep running; the hook just stops accepting new submissions.
+atexit.register(_blocking_executor.shutdown, wait=False)
 
 
 def _dispatch(request: dict) -> None:

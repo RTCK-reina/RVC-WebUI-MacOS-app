@@ -129,6 +129,7 @@ else:
         try:
             return readwave(path, normalize=saved_cfg.task.normalize)
         except Exception:
+            printt("%s-read-failed\n%s" % (path, traceback.format_exc()))
             return None
 
     # Pre-compute the list of (file, wav_path, out_path) triples that
