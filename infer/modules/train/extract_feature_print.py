@@ -6,10 +6,9 @@ now_dir = os.getcwd()
 sys.path.append(now_dir)
 
 from infer.lib.audio import load_audio
-# Patch torch.load to default weights_only=False before any fairseq import —
-# fairseq's load_checkpoint_to_cpu otherwise trips PyTorch 2.6+ safety default
-# on the HuBERT dictionary object. Must precede `import fairseq`.
-from infer.lib import torch_compat  # noqa: F401
+# Scoped compatibility helper: relaxes torch.load's weights_only default only
+# around fairseq's HuBERT loader. See infer/lib/torch_compat.py for rationale.
+from infer.lib.torch_compat import legacy_load
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
@@ -92,10 +91,11 @@ if os.access(model_path, os.F_OK) == False:
         % model_path
     )
     exit(0)
-models, saved_cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
-    [model_path],
-    suffix="",
-)
+with legacy_load():
+    models, saved_cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
+        [model_path],
+        suffix="",
+    )
 model = models[0]
 model = model.to(device)
 printt("move model to %s" % device)

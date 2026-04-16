@@ -543,7 +543,9 @@ def train_index(exp_dir1, version19):
             yield "\n".join(infos)
 
     np.save("%s/total_fea.npy" % exp_dir, big_npy)
-    n_ivf = min(int(16 * np.sqrt(big_npy.shape[0])), big_npy.shape[0] // 39)
+    # n_ivf must be >= 1; with < 39 features the original min() expression
+    # yields 0 and FAISS rejects "IVF0,Flat". Floor it to 1.
+    n_ivf = max(1, min(int(16 * np.sqrt(big_npy.shape[0])), big_npy.shape[0] // 39))
     infos.append("%s,%s" % (big_npy.shape, n_ivf))
     yield "\n".join(infos)
     index = faiss.index_factory(256 if version19 == "v1" else 768, "IVF%s,Flat" % n_ivf)
