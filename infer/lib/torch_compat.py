@@ -7,9 +7,16 @@ whose state contains a ``fairseq.data.dictionary.Dictionary`` instance.
 
 Design choice: we expose a ``legacy_load`` context manager that scopes the
 relaxed ``weights_only`` default to a single call site, rather than the
-previous module-import side effect of a global monkey-patch. The scoped
-approach keeps the rest of the app on PyTorch 2.6's safer default while still
-letting fairseq's ``checkpoint_utils.load_model_ensemble_and_task`` succeed.
+previous module-import side effect of an unconditional global monkey-patch.
+
+**Thread safety:** ``rpc_server`` dispatches blocking RPC methods on a
+dedicated worker thread while non-blocking methods run on the main
+dispatcher thread, so a naive ``torch.load = patched; ...; torch.load =
+original`` would race — a concurrent ``torch.load`` call on another thread
+could observe either the patched or the original function depending on
+timing. We therefore install the wrapper **once, at import time**, and
+control its behaviour through ``threading.local`` so each thread makes its
+own decision about whether to relax ``weights_only``.
 
 Usage::
 
@@ -20,43 +27,68 @@ Usage::
             [hubert_path], suffix=""
         )
 
-Historical note: earlier revisions of this module installed a global patch at
-import time. That worked but widened the pickle-deserialization surface to
-every ``torch.load`` call in the process — including user-supplied checkpoints
-loaded by ``infer/lib/train/process_ckpt.py``. The context manager narrows
-that surface to the specific fairseq loader.
+    # Outside the `with`, torch.load behaves exactly as PyTorch ships it
+    # (weights_only=True by default on 2.6+). Other threads are unaffected.
+
+Historical note: earlier revisions of this module installed a global patch
+that flipped the default globally — that widened the pickle-deserialization
+surface to every ``torch.load`` call in the process, including
+user-supplied checkpoints loaded by ``infer/lib/train/process_ckpt.py``.
+A later revision replaced that with a non-thread-safe scoped patch. This
+revision keeps the scoping but moves the flag to thread-local storage so
+the wrapper is always installed and its behaviour is deterministic under
+concurrency.
 """
 
 from __future__ import annotations
 
 import contextlib
+import threading
 from typing import Iterator
 
 import torch
 
+# Per-thread toggle: when the current thread is inside a `legacy_load()`
+# block, `_flag.enabled` is True and the wrapper injects
+# ``weights_only=False`` as the default. For every other thread the flag is
+# unset (getattr fallback to False) and `torch.load` behaves stock.
+_flag = threading.local()
+
+# Capture the original ``torch.load`` exactly once, before installing the
+# wrapper. We keep a reference here so nested re-imports of this module
+# don't install the wrapper on top of itself.
+_original_load = torch.load
+_PATCH_MARK = "_rvc_torch_compat_wrapper"
+
+
+def _patched_load(*args, **kwargs):  # type: ignore[no-untyped-def]
+    if getattr(_flag, "enabled", False):
+        kwargs.setdefault("weights_only", False)
+    return _original_load(*args, **kwargs)
+
+
+# Install the wrapper once. Subsequent imports of this module (e.g. from
+# test fixtures that reload() it) will see the marker and skip reinstall.
+if not getattr(torch.load, _PATCH_MARK, False):
+    setattr(_patched_load, _PATCH_MARK, True)
+    torch.load = _patched_load  # type: ignore[assignment]
+
 
 @contextlib.contextmanager
 def legacy_load() -> Iterator[None]:
-    """Temporarily restore ``torch.load``'s pre-2.6 default of
-    ``weights_only=False`` for the duration of the ``with`` block.
+    """Enable the pre-2.6 ``weights_only=False`` default for torch.load
+    **on the calling thread only**, for the duration of the ``with`` block.
 
-    Reentrancy-safe: nested ``with legacy_load()`` blocks simply stack the
-    patch and unwind it on exit. Any explicit ``weights_only=`` kwarg passed
-    to ``torch.load`` by the caller wins over the patched default.
+    Nested ``with legacy_load()`` calls on the same thread are safe: the
+    flag is saved and restored so the inner scope does not prematurely
+    disable the outer one.
 
-    The patch mutates ``torch.load`` in place; callers should wrap only the
-    narrowest possible region (ideally a single ``load_checkpoint_to_cpu`` /
-    ``load_model_ensemble_and_task`` call) to avoid widening the pickle
-    deserialization surface.
+    Callers outside any active ``legacy_load()`` block see the stock
+    PyTorch 2.6+ behaviour with ``weights_only=True`` defaulted in.
     """
-    original_load = torch.load
-
-    def _patched_load(*args, **kwargs):  # type: ignore[no-untyped-def]
-        kwargs.setdefault("weights_only", False)
-        return original_load(*args, **kwargs)
-
-    torch.load = _patched_load  # type: ignore[assignment]
+    previous = getattr(_flag, "enabled", False)
+    _flag.enabled = True
     try:
         yield
     finally:
-        torch.load = original_load  # type: ignore[assignment]
+        _flag.enabled = previous
