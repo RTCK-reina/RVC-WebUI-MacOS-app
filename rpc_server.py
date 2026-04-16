@@ -73,7 +73,15 @@ except Exception:
     pass
 
 if sys.platform == "darwin":
-    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    # E-1: PYTORCH_ENABLE_MPS_FALLBACK used to be set unconditionally, which
+    # silently redirects any MPS-unsupported op to CPU. That keeps things
+    # "running" but masks performance cliffs (e.g. a kernel that silently
+    # round-trips to CPU on every call). Opt-in now: the developer sets
+    # RVC_MPS_DEBUG=1 when they want the fallback net, default is strict
+    # so missing MPS ops surface as a real RuntimeError instead of a slow
+    # silent degradation.
+    if os.environ.get("RVC_MPS_DEBUG") == "1":
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 # Load env defaults (sha256 checksums, etc). These files ship inside the bundle.
