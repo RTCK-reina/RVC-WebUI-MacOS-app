@@ -632,9 +632,12 @@ def rpc_train_index(params: dict, ctx):
         if feat_dim is None:
             return {"status": "error", "error": "no features to load"}
 
-        # Try float32 first (matches what training consumed); fall back to the
-        # dtype of the first .npy if it turns out to be something else.
-        dtype = np.load(entries[0], mmap_mode="r").dtype
+        # Prefer float32 (matches what training consumed); fall back to the
+        # dtype of the first .npy when the source data uses a different dtype.
+        first_dtype = np.load(entries[0], mmap_mode="r").dtype
+        dtype = np.dtype(np.float32)
+        if first_dtype != dtype:
+            dtype = first_dtype
         big_npy = np.empty((total_rows, feat_dim), dtype=dtype)
         write_at = 0
         for i, entry in enumerate(entries):
