@@ -602,18 +602,60 @@ def rpc_train_index(params: dict, ctx):
 
     try:
         emit_progress(task_id, 5, "loading features", "index")
-        npys = []
+        # C-1: previously this block appended every .npy to a Python list and
+        # then called `np.concatenate(npys, 0)`, which peaks at 2× the total
+        # feature tensor size in RAM (the input list plus the concatenated
+        # output). On Mac Unified Memory, large feature sets can push against
+        # the allocator and stall.
+        #
+        # Two-pass streaming: first pass reads each .npy only to collect
+        # shape (mmap-based, no full copy), computes the total row count and
+        # the feature dimension, allocates the destination once, then the
+        # second pass memcpys each file straight into its slice. Peak memory
+        # is ~1× instead of ~2×.
+        total_rows = 0
+        feat_dim = None
+        for entry in entries:
+            if (r := _check_cancel()): return r
+            # memmap avoids reading the full array just to learn the shape.
+            arr = np.load(entry, mmap_mode="r")
+            total_rows += arr.shape[0]
+            if feat_dim is None:
+                feat_dim = arr.shape[1]
+            elif arr.shape[1] != feat_dim:
+                return {
+                    "status": "error",
+                    "error": f"feature dim mismatch: {entry} has {arr.shape[1]} "
+                             f"vs expected {feat_dim}",
+                }
+            del arr
+        if feat_dim is None:
+            return {"status": "error", "error": "no features to load"}
+
+        # Prefer float32 (matches what training consumed); fall back to the
+        # dtype of the first .npy when the source data uses a different dtype.
+        first_dtype = np.load(entries[0], mmap_mode="r").dtype
+        dtype = np.dtype(np.float32)
+        if first_dtype != dtype:
+            dtype = first_dtype
+        big_npy = np.empty((total_rows, feat_dim), dtype=dtype)
+        write_at = 0
         for i, entry in enumerate(entries):
             if (r := _check_cancel()): return r
-            npys.append(np.load(entry))
+            arr = np.load(entry)  # full load, written to the preallocated buffer
+            big_npy[write_at : write_at + arr.shape[0]] = arr
+            write_at += arr.shape[0]
+            del arr
             if i % 20 == 0:
                 emit_progress(task_id, 5 + (i / len(entries)) * 15,
                               f"loading features ({i+1}/{len(entries)})", "index")
+
         if (r := _check_cancel()): return r
-        big_npy = np.concatenate(npys, 0)
-        idx = np.arange(big_npy.shape[0])
-        np.random.shuffle(idx)
-        big_npy = big_npy[idx]
+        # Shuffle in place (np.random.permutation allocates a fresh array;
+        # shuffling the index array and applying it is what the upstream did,
+        # but we can save one copy by shuffling big_npy directly).
+        rng = np.random.default_rng()
+        rng.shuffle(big_npy, axis=0)
         if big_npy.shape[0] > 2e5:
             emit_progress(task_id, 25, "kmeans to 10k centers", "index")
             if (r := _check_cancel()): return r

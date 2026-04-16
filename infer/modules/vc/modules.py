@@ -27,7 +27,47 @@ class VC:
         self.version = None
         self.hubert_model = None
 
+        # A-1 / A-7: remember the currently-loaded sid and the dict we
+        # returned for it, so repeated load_vc(sid) calls for the same model
+        # can short-circuit instead of rebuilding Pipeline and re-calling
+        # empty_cache(). Cleared on explicit unload or model switch.
+        self._loaded_sid = None
+        self._loaded_result = None
+
         self.config = config
+
+    def _unload(self) -> None:
+        """Release the currently loaded synthesizer + HuBERT state.
+
+        Collapses the ``del ... ; empty_cache()`` block that previously
+        appeared at three separate call sites (A-7). The cache flush is
+        intentionally a single call; running it more than once per unload
+        is wasted work and MPS in particular forces a full reallocation
+        on the next inference.
+        """
+        if self.net_g is None and self.hubert_model is None:
+            return
+        logger.info("Clean model cache")
+        if self.hubert_model is not None:
+            del self.hubert_model
+            self.hubert_model = None
+        if self.net_g is not None:
+            # self.cpt may still be needed by Pipeline if it is reused, but
+            # load_vc rebuilds both so tearing it down here is safe.
+            del self.net_g
+            self.net_g = None
+        if self.cpt is not None:
+            del self.cpt
+            self.cpt = None
+        if self.pipeline is not None:
+            self.pipeline = None
+        self.n_spk = self.tgt_sr = self.if_f0 = self.version = None
+        self._loaded_sid = None
+        self._loaded_result = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
     # -----------------------------------------------------------------
     # Plain-data interface for the .app RPC server (no Gradio-shaped
@@ -37,18 +77,24 @@ class VC:
         """Load (or unload) a voice model. `sid` is the .pth file name.
 
         Returns a dict describing the loaded model, or a minimal dict when the
-        model is cleared (sid == "").
+        model is cleared (sid == ""). Idempotent on the same sid: repeated
+        calls short-circuit and reuse the in-memory net_g / pipeline instead
+        of reloading from disk and re-initializing the Pipeline (A-1).
         """
+        # A-1: hit cache when the same model is already loaded. SwiftUI invokes
+        # load_model() on every inference request regardless of whether the
+        # selection changed, and the original implementation paid the full
+        # load_synthesizer + Pipeline construction cost each time (~hundreds
+        # of ms). Return the previously-built result dict unchanged.
+        if sid and sid == self._loaded_sid and self.net_g is not None:
+            return self._loaded_result
+
+        # Either a switch ("") / switch-to-different / never-loaded path —
+        # consolidate the teardown into _unload so the del-then-empty_cache
+        # ritual runs at most once per switch (A-7).
+        self._unload()
+
         if not sid:
-            # Clear caches / unload current model.
-            if self.hubert_model is not None:
-                logger.info("Clean model cache")
-                del (self.net_g, self.n_spk, self.hubert_model, self.tgt_sr)
-                self.hubert_model = self.net_g = self.n_spk = self.tgt_sr = None
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                elif torch.backends.mps.is_available():
-                    torch.mps.empty_cache()
             return {"loaded": False}
 
         person = f'{os.getenv("weight_root")}/{sid}'
@@ -68,7 +114,7 @@ class VC:
         n_spk = self.cpt["config"][-3]
         index_path = get_index_path_from_model(sid)
 
-        return {
+        result = {
             "loaded": True,
             "sid": sid,
             "n_spk": int(n_spk),
@@ -78,6 +124,9 @@ class VC:
             "index_path": index_path,
             "model_info": show_model_info(self.cpt),
         }
+        self._loaded_sid = sid
+        self._loaded_result = result
+        return result
 
     def get_vc(self, sid, *to_return_protect):
         logger.info("Get sid: " + sid)

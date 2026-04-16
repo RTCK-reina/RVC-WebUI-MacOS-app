@@ -15,7 +15,6 @@ import torch
 import torch.nn.functional as F
 from scipy import signal
 
-from infer.lib.device import empty_device_cache
 from rvc.f0 import Generator
 
 now_dir = os.getcwd()
@@ -73,6 +72,51 @@ class Pipeline(object):
             self.window,
             self.sr,
         )
+
+        # A-2: FAISS index cache. For the duration of a Pipeline instance
+        # (= one VC model load, shared across every vc_single / vc_multi
+        # call), keep the last-loaded index and its reconstructed vector
+        # matrix so repeated inferences against the same .index file skip
+        # the faiss.read_index + reconstruct_n cost (hundreds of ms + a
+        # full-ntotal allocation per call).
+        #
+        # Invalidation: stored with the file path AND mtime; if the index
+        # file is rewritten (e.g. user re-trained the index), the cache
+        # drops transparently on the next call.
+        self._index_cache_path: str = ""
+        self._index_cache_mtime: float = 0.0
+        self._index_cache: tuple = (None, None)  # (faiss.Index, big_npy)
+
+    def _load_or_reuse_index(self, file_index: str):
+        """Return (index, big_npy) for `file_index`, reusing the in-memory
+        cache when possible. Returns (None, None) on load failure so the
+        caller can proceed without index-based refinement.
+        """
+        if not file_index or not os.path.exists(file_index):
+            return None, None
+        try:
+            mtime = os.path.getmtime(file_index)
+        except OSError:
+            return None, None
+        if (
+            file_index == self._index_cache_path
+            and mtime == self._index_cache_mtime
+            and self._index_cache[0] is not None
+        ):
+            return self._index_cache
+        try:
+            index = faiss.read_index(file_index)
+            big_npy = index.reconstruct_n(0, index.ntotal)
+        except Exception:
+            logger.exception("failed to load faiss index: %s", file_index)
+            self._index_cache = (None, None)
+            self._index_cache_path = ""
+            self._index_cache_mtime = 0.0
+            return None, None
+        self._index_cache = (index, big_npy)
+        self._index_cache_path = file_index
+        self._index_cache_mtime = mtime
+        return index, big_npy
 
     def vc(
         self,
@@ -205,19 +249,13 @@ class Pipeline(object):
         protect,
         f0_file=None,
     ):
-        if (
-            file_index != ""
-            # and file_big_npy != ""
-            # and os.path.exists(file_big_npy) == True
-            and os.path.exists(file_index)
-            and index_rate != 0
-        ):
-            try:
-                index = faiss.read_index(file_index)
-                big_npy = index.reconstruct_n(0, index.ntotal)
-            except Exception:
-                logger.exception("failed to load faiss index: %s", file_index)
-                index = big_npy = None
+        # A-2: the index is cached on the Pipeline instance and only
+        # re-read from disk when the path or mtime changes. Previously this
+        # block executed `faiss.read_index + reconstruct_n` on every call,
+        # even for back-to-back inferences against the same index, which
+        # was the dominant latency for short files.
+        if index_rate != 0:
+            index, big_npy = self._load_or_reuse_index(file_index)
         else:
             index = big_npy = None
         audio = signal.filtfilt(bh, ah, audio)
@@ -362,5 +400,11 @@ class Pipeline(object):
             max_int16 /= audio_max
         np.multiply(audio_opt, max_int16, audio_opt)
         del pitch, pitchf, sid
-        empty_device_cache()
+        # A-3: the previous implementation called empty_device_cache() at
+        # the tail of every pipeline() invocation, which forces MPS/CUDA
+        # to free and then re-allocate working memory on the next call.
+        # In the continuous-inference case (batch / realtime) this is pure
+        # overhead because the allocator would have reused those arenas.
+        # Cache eviction is now the responsibility of VC.load_vc's unload
+        # path, which runs at most once per model switch.
         return audio_opt

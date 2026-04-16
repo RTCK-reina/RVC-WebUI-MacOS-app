@@ -415,7 +415,38 @@ def train_and_evaluate(
     net_d.train()
 
     # Prepare data iterator
-    if hps.if_cache_data_in_gpu == True:
+    #
+    # C-2(perf): honor RVC_GPU_CACHE_MAX_BATCHES as a soft cap. The original
+    # "if_cache_data_in_gpu=True" path eagerly copies EVERY batch to the
+    # device and holds it for the whole training run; on Apple Silicon's
+    # Unified Memory this will happily push the OS into swap on a large
+    # dataset. When the cap is set and `len(train_loader)` exceeds it, we
+    # silently fall back to the streaming loader for this epoch so the
+    # user's cached bootstrap epochs still work but oversized runs don't
+    # OOM. Not setting the env var preserves upstream behaviour exactly.
+    _cache_cap = os.environ.get("RVC_GPU_CACHE_MAX_BATCHES")
+    try:
+        _cache_cap = int(_cache_cap) if _cache_cap else None
+    except (TypeError, ValueError):
+        _cache_cap = None
+    # Local flag tracks whether GPU cache is actually in use this epoch.
+    # When the cap is exceeded we fall back to a CPU DataLoader iterator but
+    # must also reflect that in the device-transfer condition below — otherwise
+    # data stays on CPU while the model is on MPS, causing a device mismatch.
+    use_gpu_cache = hps.if_cache_data_in_gpu == True
+    if (
+        use_gpu_cache
+        and _cache_cap is not None
+        and len(train_loader) > _cache_cap
+    ):
+        if epoch == 1:
+            logger.warning(
+                "if_cache_data_in_gpu disabled: %d batches > RVC_GPU_CACHE_MAX_BATCHES=%d",
+                len(train_loader), _cache_cap,
+            )
+        data_iterator = enumerate(train_loader)
+        use_gpu_cache = False  # cap exceeded; use CPU iterator, transfer manually
+    elif use_gpu_cache:
         # Use Cache
         data_iterator = cache
         if cache == []:
@@ -517,7 +548,7 @@ def train_and_evaluate(
         else:
             phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid = info
         ## Load on MPS (or stay on CPU)
-        if (hps.if_cache_data_in_gpu == False) and _IS_MPS:
+        if (not use_gpu_cache) and _IS_MPS:
             phone = phone.to("mps", non_blocking=True)
             phone_lengths = phone_lengths.to("mps", non_blocking=True)
             if hps.if_f0 == 1:

@@ -175,9 +175,15 @@ struct BatchInferenceView: View {
         isRunning = true
         defer { isRunning = false }
 
+        // Retain the load_model response so we can forward the resolved
+        // index_path to vc_multi. The file_index / file_index2 fields were
+        // previously hard-coded to "" and the index was unused on the
+        // Swift path (A-5).
+        let indexPath: String
         do {
-            _ = try await bridge.callRaw("load_model",
+            let loadResult = try await bridge.callRaw("load_model",
                 params: .object(["sid": .string(selectedModel)]))
+            indexPath = loadResult["index_path"]?.stringValue ?? ""
         } catch {
             errorMessage = "モデルロード失敗: \(error.localizedDescription)"
             return
@@ -192,7 +198,7 @@ struct BatchInferenceView: View {
             "output_dir": .string(outputDir),
             "f0_up_key": .number(f0UpKey),
             "f0_method": .string(f0Method),
-            "file_index": .string(""),
+            "file_index": .string(indexPath),
             "file_index2": .string(""),
             "index_rate": .number(indexRate),
             "filter_radius": .number(filterRadius),
