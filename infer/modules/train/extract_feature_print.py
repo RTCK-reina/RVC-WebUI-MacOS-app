@@ -129,6 +129,11 @@ else:
         try:
             return readwave(path, normalize=saved_cfg.task.normalize)
         except Exception:
+            # Keep parity with the original serial loop which printed the
+            # full traceback via `traceback.format_exc()`; without this,
+            # read failures surfaced as a bare "*-read-failed" line with
+            # no diagnostic context.
+            printt("read-failed: %s\n%s" % (path, traceback.format_exc()))
             return None
 
     # Pre-compute the list of (file, wav_path, out_path) triples that

@@ -43,12 +43,36 @@ if [[ $SKIP_CONDA -eq 0 ]]; then
     echo "==> Packing conda environment '${CONDA_ENV_NAME}' with conda-pack"
     rm -rf "${PYTHON_BUNDLE}"
     mkdir -p "${PYTHON_BUNDLE}"
-    conda pack --ignore-editable-packages \
-               --ignore-missing-files \
-               -n "${CONDA_ENV_NAME}" \
-               -o "${BUILD_DIR}/rvc_env.tar.gz" \
-               --format tar.gz \
-               --n-threads 4
+    # Resolve the conda-pack executable. It is a per-env tool, not part of
+    # conda's built-in subcommands, so `conda pack` only works when
+    # conda-pack is installed into the base env. We instead call the
+    # conda-pack CLI directly — first try PATH, then fall back to the one
+    # bundled inside the target env itself (miniforge ships it there when
+    # the repo's setup_conda_env.sh installs the requirements).
+    if command -v conda-pack >/dev/null 2>&1; then
+        CONDA_PACK_BIN="conda-pack"
+    else
+        # Locate the env's conda-pack via `conda info` (portable across
+        # miniconda/miniforge/anaconda installs).
+        _env_prefix="$(conda info --envs | awk -v n="${CONDA_ENV_NAME}" '$1==n {print $NF}')"
+        if [[ -n "${_env_prefix}" && -x "${_env_prefix}/bin/conda-pack" ]]; then
+            CONDA_PACK_BIN="${_env_prefix}/bin/conda-pack"
+        else
+            echo "ERROR: conda-pack not found. Install with:" >&2
+            echo "  conda install -n ${CONDA_ENV_NAME} -c conda-forge conda-pack" >&2
+            echo "or:" >&2
+            echo "  brew install conda-pack" >&2
+            exit 1
+        fi
+    fi
+    echo "    using: ${CONDA_PACK_BIN}"
+    "${CONDA_PACK_BIN}" \
+        --ignore-editable-packages \
+        --ignore-missing-files \
+        -n "${CONDA_ENV_NAME}" \
+        -o "${BUILD_DIR}/rvc_env.tar.gz" \
+        --format tar.gz \
+        --n-threads 4
     tar -xzf "${BUILD_DIR}/rvc_env.tar.gz" -C "${PYTHON_BUNDLE}"
     # Fix absolute shebangs / RPATHs for the new location.
     ( cd "${PYTHON_BUNDLE}" && bash bin/conda-unpack || true )

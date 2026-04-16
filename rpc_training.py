@@ -949,15 +949,34 @@ def rpc_realtime_start(params: dict, ctx):
     except Exception as e:
         # Release the reservation so the next start() call can proceed.
         with _realtime_lock:
-            _realtime_state["stream"] = None
+            if _realtime_state["stream"] == "starting":
+                _realtime_state["stream"] = None
         return {"status": "error", "error": f"stream.start failed: {e}"}
 
+    # Racing stop(): if rpc_realtime_stop ran while we were inside the
+    # heavy init block above, it has already cleared the "starting" sentinel
+    # to None. We must dispose of the stream we just created rather than
+    # leaving it orphaned on the audio thread and silently overwriting the
+    # cleared state, or the next start() would see stream != None and
+    # refuse to run forever.
     with _realtime_lock:
-        _realtime_state["rvc"] = rvc
-        _realtime_state["stream"] = stream  # replace "starting" sentinel
-        _realtime_state["stop_event"] = stop_event
-        _realtime_state["params"] = dict(params)
-        _realtime_state["sample_rate"] = sample_rate
+        if _realtime_state["stream"] != "starting":
+            stopped_during_init = True
+        else:
+            stopped_during_init = False
+            _realtime_state["rvc"] = rvc
+            _realtime_state["stream"] = stream  # replace "starting" sentinel
+            _realtime_state["stop_event"] = stop_event
+            _realtime_state["params"] = dict(params)
+            _realtime_state["sample_rate"] = sample_rate
+
+    if stopped_during_init:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception as e:
+            logger.warning("stream cleanup after stop-during-init: %s", e)
+        return {"status": "cancelled", "error": "stopped during init"}
 
     status("realtime")
     return {"status": "success", "sample_rate": sample_rate, "model_sr": int(sr_model)}

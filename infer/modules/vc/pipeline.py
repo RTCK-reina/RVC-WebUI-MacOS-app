@@ -15,7 +15,6 @@ import torch
 import torch.nn.functional as F
 from scipy import signal
 
-from infer.lib.device import empty_device_cache
 from rvc.f0 import Generator
 
 now_dir = os.getcwd()

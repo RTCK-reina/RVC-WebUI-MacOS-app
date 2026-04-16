@@ -10,6 +10,7 @@ No Gradio, no HTTP server, no network calls.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import logging
 import os
@@ -510,6 +511,10 @@ def rpc_vc_multi(params: dict) -> dict:
         try:
             for i, path in enumerate(all_paths):
                 if task.cancel_event.is_set():
+                    # Cancel not-yet-started encodes so repeated cancellations
+                    # don't accumulate background workers building up in the pool.
+                    for fut in save_futures:
+                        fut.cancel()
                     return {"status": "cancelled", "completed": i, "total": total}
                 emit_progress(
                     task_id,
@@ -536,27 +541,37 @@ def rpc_vc_multi(params: dict) -> dict:
                     model_stem = Path(sid).stem if sid else "model"
                     out_name = f"{Path(path).stem}_{model_stem}.{fmt}"
                     out_path = str(Path(out_root) / out_name)
-                    # save_audio mutates audio_opt in place during encoding
-                    # on some formats; copy so the async write doesn't race
-                    # with the next iteration's numpy buffers. The copy cost
-                    # is negligible next to encode+disk.
+                    # save_audio (infer/lib/audio.py) reads `audio` into a
+                    # fresh wav buffer via wavfile.write or float_to_int16;
+                    # neither mutates the input array. vc_single also
+                    # returns a newly-allocated numpy array per call, so
+                    # there is no aliasing with the next iteration. No
+                    # defensive copy required.
                     save_futures.append(
                         save_pool.submit(
-                            save_audio, out_path, audio_opt.copy(), tgt_sr,
+                            save_audio, out_path, audio_opt, tgt_sr,
                             True, fmt,  # f32=True, format=fmt
                         )
                     )
                     results.append({"input": path, "output": out_path, "info": info})
                 else:
                     results.append({"input": path, "output": None, "info": info})
-            # Wait for pending encodes before returning; surface the first
-            # encoding error if any.
+            # Wait for pending encodes before returning the success result;
+            # surface the first encoding error if any.
             for fut in save_futures:
                 fut.result()
+            emit_progress(task_id, 100, f"Completed {total} files", "batch")
+            return {"status": "success", "results": results, "output_dir": out_root}
         finally:
-            save_pool.shutdown(wait=True)
-        emit_progress(task_id, 100, f"Completed {total} files", "batch")
-        return {"status": "success", "results": results, "output_dir": out_root}
+            # Cancel any not-yet-started saves and shut down without blocking.
+            # cancel_futures=True (Py3.9+) prevents queued encodes from starting
+            # after an early return; tasks already running are allowed to finish.
+            for fut in save_futures:
+                fut.cancel()
+            try:
+                save_pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                save_pool.shutdown(wait=False)
     finally:
         _unregister_task(task_id)
         app_state.status("idle")
@@ -963,6 +978,15 @@ BLOCKING_METHODS = {
 _blocking_executor = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="rpc-blocking"
 )
+# Register an explicit best-effort shutdown for normal interpreter exit.
+# `wait=False` means the current RPC is not joined here; the shutdown hook
+# simply stops accepting new submissions. CPython already registers an
+# atexit hook to clean up executors on normal shutdown, so this registration
+# is mainly for explicitness and to make the intended lifecycle of the
+# blocking pool clear. Note: ThreadPoolExecutor workers are NOT daemon
+# threads, and atexit handlers do NOT run under os._exit() — hard kills
+# bypass this entirely.
+atexit.register(_blocking_executor.shutdown, wait=False)
 
 
 def _dispatch(request: dict) -> None:

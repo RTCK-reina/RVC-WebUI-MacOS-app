@@ -85,10 +85,13 @@ final class AppState: ObservableObject {
     ///
     /// Priority:
     ///   1. RVC_PYTHON env var (must point at an executable file)
-    ///   2. Well-known macOS interpreter locations
-    ///   3. Last-resort fallback to /usr/bin/python3 (always present on
-    ///      modern macOS; if absent the launcher will surface a real ENOENT
-    ///      rather than the misleading literal "env python3" path)
+    ///   2. Well-known macOS interpreter locations checked for existence
+    ///   3. Last-resort fallback to /usr/bin/python3. Note: macOS does not
+    ///      actually guarantee a system Python 3 — recent releases moved it
+    ///      to the Command Line Tools and it may be absent. When everything
+    ///      is missing, the resulting ENOENT error message at least names
+    ///      a real filesystem path instead of the misleading "env python3"
+    ///      literal the old code used to emit.
     private func resolveDevPython() -> String {
         let fm = FileManager.default
 
