@@ -511,6 +511,10 @@ def rpc_vc_multi(params: dict) -> dict:
         try:
             for i, path in enumerate(all_paths):
                 if task.cancel_event.is_set():
+                    # Cancel not-yet-started encodes so repeated cancellations
+                    # don't accumulate background workers building up in the pool.
+                    for fut in save_futures:
+                        fut.cancel()
                     return {"status": "cancelled", "completed": i, "total": total}
                 emit_progress(
                     task_id,
@@ -559,11 +563,15 @@ def rpc_vc_multi(params: dict) -> dict:
             emit_progress(task_id, 100, f"Completed {total} files", "batch")
             return {"status": "success", "results": results, "output_dir": out_root}
         finally:
-            # Use wait=False so cancellation (handled via the early `return
-            # cancelled` above) and exceptions don't block the RPC response
-            # on pending encodes. Still-running save tasks are harmless:
-            # they write into the user's output dir and exit on their own.
-            save_pool.shutdown(wait=False)
+            # Cancel any not-yet-started saves and shut down without blocking.
+            # cancel_futures=True (Py3.9+) prevents queued encodes from starting
+            # after an early return; tasks already running are allowed to finish.
+            for fut in save_futures:
+                fut.cancel()
+            try:
+                save_pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                save_pool.shutdown(wait=False)
     finally:
         _unregister_task(task_id)
         app_state.status("idle")
@@ -970,14 +978,14 @@ BLOCKING_METHODS = {
 _blocking_executor = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="rpc-blocking"
 )
-# Register a best-effort shutdown so that if the server process exits
-# while a blocking RPC is in flight, the executor's worker thread does
-# not keep the interpreter alive. `wait=False` means the current RPC is
-# allowed to keep running; the atexit chain just stops accepting new
-# submissions. Python already treats ThreadPoolExecutor worker threads as
-# daemon threads under normal shutdown, but we add the explicit hook so
-# unusual exit paths (e.g. os._exit via a hook, or a non-daemon atexit
-# handler chaining this) still release the pool cleanly.
+# Register an explicit best-effort shutdown for normal interpreter exit.
+# `wait=False` means the current RPC is not joined here; the shutdown hook
+# simply stops accepting new submissions. CPython already registers an
+# atexit hook to clean up executors on normal shutdown, so this registration
+# is mainly for explicitness and to make the intended lifecycle of the
+# blocking pool clear. Note: ThreadPoolExecutor workers are NOT daemon
+# threads, and atexit handlers do NOT run under os._exit() — hard kills
+# bypass this entirely.
 atexit.register(_blocking_executor.shutdown, wait=False)
 
 
