@@ -429,13 +429,18 @@ def train_and_evaluate(
         _cache_cap = int(_cache_cap) if _cache_cap else None
     except (TypeError, ValueError):
         _cache_cap = None
-    # Local flag tracks whether GPU cache is actually in use this epoch.
-    # When the cap is exceeded we fall back to a CPU DataLoader iterator but
-    # must also reflect that in the device-transfer condition below — otherwise
-    # data stays on CPU while the model is on MPS, causing a device mismatch.
-    use_gpu_cache = hps.if_cache_data_in_gpu == True
+    # `_use_cache` is the authoritative per-epoch decision for this function.
+    # We used to toggle behaviour via `hps.if_cache_data_in_gpu == True`
+    # further down, but the cap-fallback branch below left hps unchanged
+    # even when it switched to the streaming loader — the per-step loop
+    # then saw `hps.if_cache_data_in_gpu == True`, skipped the CPU→MPS
+    # move, and passed CPU tensors to an MPS model. Tracking the decision
+    # in a local variable and consulting it everywhere avoids that
+    # inconsistency without mutating hps (which is loaded from config.json
+    # and used elsewhere).
+    _use_cache = hps.if_cache_data_in_gpu == True
     if (
-        use_gpu_cache
+        _use_cache
         and _cache_cap is not None
         and len(train_loader) > _cache_cap
     ):
@@ -444,9 +449,10 @@ def train_and_evaluate(
                 "if_cache_data_in_gpu disabled: %d batches > RVC_GPU_CACHE_MAX_BATCHES=%d",
                 len(train_loader), _cache_cap,
             )
+        _use_cache = False
+    if not _use_cache:
         data_iterator = enumerate(train_loader)
-        use_gpu_cache = False  # cap exceeded; use CPU iterator, transfer manually
-    elif use_gpu_cache:
+    else:
         # Use Cache
         data_iterator = cache
         if cache == []:
@@ -523,9 +529,6 @@ def train_and_evaluate(
         else:
             # Load shuffled cache
             shuffle(cache)
-    else:
-        # Loader
-        data_iterator = enumerate(train_loader)
 
     # Run steps
     epoch_recorder = EpochRecorder()
@@ -547,8 +550,12 @@ def train_and_evaluate(
             ) = info
         else:
             phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid = info
-        ## Load on MPS (or stay on CPU)
-        if (not use_gpu_cache) and _IS_MPS:
+        ## Load on MPS (or stay on CPU). Pair with `_use_cache`: the cache
+        ## branch above already moved every tensor to MPS before it was
+        ## appended, so skip the redundant transfer when we're iterating
+        ## `cache`. When the cap fallback turned caching off, the tensors
+        ## are still CPU-side here and must be moved.
+        if (not _use_cache) and _IS_MPS:
             phone = phone.to("mps", non_blocking=True)
             phone_lengths = phone_lengths.to("mps", non_blocking=True)
             if hps.if_f0 == 1:
