@@ -238,6 +238,12 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
         collate_fn = TextAudioCollateMultiNSFsid()
     else:
         collate_fn = TextAudioCollate()
+    # num_workers=0 のときは persistent_workers / prefetch_factor を渡さない。
+    # PyTorch は num_workers==0 でこれらを指定すると ValueError を送出する。
+    _loader_kwargs = {}
+    if _num_workers > 0:
+        _loader_kwargs["persistent_workers"] = True
+        _loader_kwargs["prefetch_factor"] = _prefetch_factor
     train_loader = DataLoader(
         train_dataset,
         num_workers=_num_workers,
@@ -245,13 +251,12 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
         pin_memory=False,
         collate_fn=collate_fn,
         batch_sampler=train_sampler,
-        persistent_workers=True,
-        prefetch_factor=_prefetch_factor,
+        **_loader_kwargs,
     )
     logger.info(
-        "DataLoader: num_workers=%d, prefetch_factor=%d",
+        "DataLoader: num_workers=%d, prefetch_factor=%s",
         _num_workers,
-        _prefetch_factor,
+        _prefetch_factor if _num_workers > 0 else "n/a",
     )
     mdl = hps.copy().model
     del mdl.use_spectral_norm
@@ -516,6 +521,10 @@ def train_and_evaluate(
     grad_norm_d = grad_norm_g = 0.0  # accumulation 中に未定義になるのを防ぐ
     optim_d.zero_grad()
     optim_g.zero_grad()
+    # iter_idx: ループ内の連続カウンタ。
+    # cache/shuffle 分岐では batch_idx が元のデータ順のままシャッフルされ
+    # 非連続になるため、accumulation 判定には使用しない。
+    iter_idx = 0
     for batch_idx, info in data_iterator:
         # Data
         ## Unpack
@@ -546,8 +555,9 @@ def train_and_evaluate(
             spec_lengths = spec_lengths.to("mps", non_blocking=True)
             wave = wave.to("mps", non_blocking=True)
 
-        # accumulation_steps バッチごとに optimizer.step() を実行するか判定
-        is_update_step = (batch_idx + 1) % accumulation_steps == 0
+        # accumulation_steps バッチごとに optimizer.step() を実行するか判定。
+        # iter_idx（連続）を使い、batch_idx（cache shuffle 後に非連続）に依存しない。
+        is_update_step = (iter_idx + 1) % accumulation_steps == 0
 
         # Calculate
         with autocast(enabled=hps.train.fp16_run):
@@ -677,7 +687,21 @@ def train_and_evaluate(
                     scalars=scalar_dict,
                 )
         global_step += 1
+        iter_idx += 1
     # /Run steps
+
+    # epoch 末尾: accumulation_steps で割り切れない端数バッチの勾配を flush。
+    # is_update_step が一度も True にならなかった場合も含む。
+    if iter_idx > 0 and iter_idx % accumulation_steps != 0:
+        scaler.unscale_(optim_d)
+        grad_norm_d = total_grad_norm(net_d.parameters())
+        scaler.step(optim_d)
+        optim_d.zero_grad()
+        scaler.unscale_(optim_g)
+        grad_norm_g = total_grad_norm(net_g.parameters())
+        scaler.step(optim_g)
+        scaler.update()
+        optim_g.zero_grad()
 
     if epoch % hps.save_every_epoch == 0 and rank == 0:
         if hps.if_latest == 0:
