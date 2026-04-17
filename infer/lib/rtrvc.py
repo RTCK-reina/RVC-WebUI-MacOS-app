@@ -24,7 +24,7 @@ class RVC:
         self,
         key: Union[int, float],
         formant: Union[int, float],
-        pth_path: torch.serialization.FILE_LIKE,
+        pth_path: Union[str, Path],
         index_path: str,
         index_rate: Union[int, float],
         n_cpu: int = os.cpu_count(),
@@ -175,7 +175,7 @@ class RVC:
                 self.hubert.final_proj(logits[0]) if self.version == "v1" else logits[0]
             )
             feats = torch.cat((feats, feats[:, -1:, :]), 1)
-            if protect < 0.5 and self.if_f0 == 1:
+            if protect < 0.5:
                 feats0 = feats.clone()
 
         try:

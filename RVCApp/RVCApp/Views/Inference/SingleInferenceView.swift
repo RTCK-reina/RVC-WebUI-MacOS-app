@@ -38,17 +38,17 @@ struct SingleInferenceView: View {
         }
     }
 
-    @State private var selectedModel: String = ""
-    @State private var inputPath: String = ""
-    @State private var f0UpKey: Double = 0
-    @State private var f0Method: String = "rmvpe"
-    @State private var indexRate: Double = 0.75
-    @State private var filterRadius: Double = 3
-    @State private var rmsMixRate: Double = 0.25
-    @State private var protect: Double = 0.33
-    @State private var resampleSR: Double = 0
-    @State private var format: String = "flac"
-    @State private var preset: InferencePreset = .balanced
+    @AppStorage("single.selectedModel") private var selectedModel: String = ""
+    @AppStorage("single.inputPath") private var inputPath: String = ""
+    @AppStorage("single.f0UpKey") private var f0UpKey: Double = 0
+    @AppStorage("single.f0Method") private var f0Method: String = "rmvpe"
+    @AppStorage("single.indexRate") private var indexRate: Double = 0.75
+    @AppStorage("single.filterRadius") private var filterRadius: Double = 3
+    @AppStorage("single.rmsMixRate") private var rmsMixRate: Double = 0.25
+    @AppStorage("single.protect") private var protect: Double = 0.33
+    @AppStorage("single.resampleSR") private var resampleSR: Double = 0
+    @AppStorage("single.format") private var format: String = "flac"
+    @AppStorage("single.preset") private var preset: InferencePreset = .balanced
 
     @State private var taskID: String = ""
     @State private var lastResult: VCSingleResult?
@@ -86,7 +86,7 @@ struct SingleInferenceView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text("単一推論")
                 .font(.title2).bold()
-            Text("音声ファイルを選んで、指定のモデルで変換します。結果は ~/Documents/RVC-WebUI/output/inference/ に保存されます。")
+            Text("音声ファイルを選んで、指定のモデルで変換します。結果は ~/Documents/RVC-Swift/output/inference/ に保存されます。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -243,7 +243,10 @@ struct SingleInferenceView: View {
         let id = "vc_single_\(Int(Date().timeIntervalSince1970 * 1000))"
         taskID = id
         isRunning = true
-        defer { isRunning = false }
+        defer {
+            isRunning = false
+            taskID = ""
+        }
 
         // Load model if different from previously loaded one.
         do {

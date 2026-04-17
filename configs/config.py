@@ -47,11 +47,11 @@ def _default_base_dir() -> Path:
 
 
 def _default_user_dir() -> Path:
-    """Resolve the user data dir under ~/Documents/RVC-WebUI by default.
+    """Resolve the user data dir under ~/Documents/RVC-Swift by default.
 
     Priority:
       1. RVC_USER_DIR env var
-      2. ~/Documents/RVC-WebUI (the .app convention)
+      2. ~/Documents/RVC-Swift (the .app convention)
       3. Current working directory (legacy)
     """
     env = os.environ.get("RVC_USER_DIR")
@@ -60,7 +60,7 @@ def _default_user_dir() -> Path:
     home = Path.home()
     documents = home / "Documents"
     if documents.is_dir():
-        return (documents / "RVC-WebUI").resolve()
+        return (documents / "RVC-Swift").resolve()
     return Path(os.getcwd()).resolve()
 
 
@@ -96,9 +96,9 @@ def _populate_env_paths(base_dir: Path, user_dir: Path) -> None:
     populated. The upstream ``.env`` bundled with this repo still carries
     cwd-relative defaults (``weight_root = assets/weights`` etc.) that make
     no sense for the .app: the bundle is read-only, cwd is user_dir, and user
-    weights must live at ``~/Documents/RVC-WebUI/models/``. If we use
+    weights must live at ``~/Documents/RVC-Swift/models/``. If we use
     ``setdefault`` here, ``load_dotenv`` wins and small-model saves end up in
-    ``~/Documents/RVC-WebUI/assets/weights/`` — an unexpected location the
+    ``~/Documents/RVC-Swift/assets/weights/`` — an unexpected location the
     rest of the app does not index. Force the assignment.
     """
     os.environ["weight_root"] = str(user_dir / "models")

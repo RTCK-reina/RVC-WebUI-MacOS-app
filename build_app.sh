@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the standalone RVC-WebUI.app bundle.
+# Build the standalone RVC Swift.app bundle.
 #
 # Requirements (installed via Homebrew):
 #   brew install xcodegen conda-pack
@@ -8,13 +8,13 @@
 # Usage:
 #   ./build_app.sh [--skip-conda] [--skip-xcode] [--skip-sign]
 #
-# Produces: build/RVC-WebUI.app
+# Produces: build/RVC Swift.app
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${ROOT_DIR}/build"
-APP_NAME="RVC-WebUI.app"
+APP_NAME="RVC Swift.app"
 APP_PATH="${BUILD_DIR}/${APP_NAME}"
 
 SKIP_CONDA=0
@@ -67,11 +67,11 @@ if [[ $SKIP_XCODE -eq 0 ]]; then
         -project "${ROOT_DIR}/RVCApp/RVCApp.xcodeproj" \
         -scheme RVCApp \
         -configuration Release \
-        -derivedDataPath "${BUILD_DIR}/DerivedData" \
         build
 
+    # SYMROOT in project.yml outputs directly to build/Release/.
     rm -rf "${APP_PATH}"
-    cp -R "${BUILD_DIR}/DerivedData/Build/Products/Release/RVC-WebUI.app" "${APP_PATH}"
+    cp -R "${BUILD_DIR}/Release/RVC Swift.app" "${APP_PATH}"
 fi
 
 # ---------------------------------------------------------------------------

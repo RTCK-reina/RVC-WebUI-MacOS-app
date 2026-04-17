@@ -42,7 +42,7 @@ def _is_audio_file(path: str, *, strict: bool = False) -> bool:
     return ext in _AUDIO_EXTS
 
 
-def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format0):
+def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format0, cancel_event=None):
     infos = []
     try:
         inp_root = inp_root.strip(" ").strip('"').strip("\n").strip('"').strip(" ")
@@ -121,6 +121,10 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
 
         # モデル推論（シリアル）
         for inp_path, was_reformatted in preproc_results:
+            if cancel_event is not None and cancel_event.is_set():
+                infos.append("Cancelled.")
+                yield "\n".join(infos)
+                return
             try:
                 pre_fun._path_audio_(
                     inp_path, save_root_ins, save_root_vocal, format0

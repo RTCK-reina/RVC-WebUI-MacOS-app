@@ -34,6 +34,10 @@ final class PythonBridge: ObservableObject {
     @Published private(set) var isAlive: Bool = false
     @Published private(set) var resourceStats: ResourceStats = .idle
     @Published private(set) var activeProgress: [String: TaskProgress] = [:]
+    /// Whether the floating task list is collapsed by the user.
+    @Published var taskListMinimized: Bool = false
+    /// Task IDs that have been cancelled — progress notifications for these are ignored.
+    private var cancelledTaskIDs: Set<String> = []
     @Published private(set) var lastError: String?
     @Published private(set) var backendStatus: String = "starting"
     @Published private(set) var initialInfo: JSONValue?
@@ -45,6 +49,8 @@ final class PythonBridge: ObservableObject {
 
     // MARK: - Process plumbing
 
+    /// PID cached for nonisolated killSync() — updated on start/shutdown.
+    nonisolated(unsafe) private var _backendPID: pid_t = 0
     private var process: Process?
     private var stdinPipe: Pipe?
     private var stdoutPipe: Pipe?
@@ -62,7 +68,7 @@ final class PythonBridge: ObservableObject {
     private var stderrTail = ""
     private let stderrTailMaxLen = 8192
     /// Log file mirroring stderr for post-mortem debugging. Lives under
-    /// ~/Library/Logs/RVC-WebUI/.
+    /// ~/Library/Logs/RVC-Swift/.
     private var logFileHandle: FileHandle?
 
     // MARK: - Public lifecycle
@@ -71,14 +77,17 @@ final class PythonBridge: ObservableObject {
     ///  - `pythonExec`: absolute path to the bundled python3 binary
     ///  - `serverScript`: absolute path to rpc_server.py
     ///  - `baseDir`: read-only bundle dir (Contents/Resources)
-    ///  - `userDir`: writable per-user dir (~/Documents/RVC-WebUI by default)
+    ///  - `userDir`: writable per-user dir (~/Documents/RVC-Swift by default)
     func start(
         pythonExec: String,
         serverScript: String,
         baseDir: String,
         userDir: String
     ) async throws {
-        precondition(process == nil, "PythonBridge.start called twice")
+        guard process == nil else {
+            log("=== start() skipped — already running")
+            return
+        }
 
         openLogFile()
         log("=== start() called")
@@ -150,6 +159,7 @@ final class PythonBridge: ObservableObject {
         } catch {
             throw PythonBridgeError.launchFailed(error.localizedDescription)
         }
+        _backendPID = p.processIdentifier
         log("=== process.run() returned, pid=\(p.processIdentifier)")
 
         // Two-stage wait: first see an "alive" notification (fast, pre-import),
@@ -182,7 +192,7 @@ final class PythonBridge: ObservableObject {
             let tail = String(stderrTail.suffix(1500))
             return PythonBridgeError.launchFailed(
                 "Python backend did not respond in time.\n" +
-                "ログ: ~/Library/Logs/RVC-WebUI/bridge.log\n\n" +
+                "ログ: ~/Library/Logs/RVC-Swift/bridge.log\n\n" +
                 "--- Python stderr (末尾) ---\n\(tail)")
         }
         return error
@@ -202,6 +212,35 @@ final class PythonBridge: ObservableObject {
             p.terminate()
         }
         process = nil
+        _backendPID = 0
+    }
+
+    /// Remove a task and its children (prefix match) from the active progress
+    /// list and ignore future updates for them.
+    func clearProgress(for taskID: String) {
+        // Snapshot keys to avoid mutating dictionary during iteration.
+        let keysToRemove = activeProgress.keys.filter {
+            $0 == taskID || $0.hasPrefix(taskID + "_")
+        }
+        for key in keysToRemove {
+            activeProgress.removeValue(forKey: key)
+            cancelledTaskIDs.insert(key)
+        }
+        cancelledTaskIDs.insert(taskID)
+    }
+
+    /// Synchronous kill for use in applicationWillTerminate where async
+    /// is not available. Sends SIGTERM then SIGKILL to ensure cleanup.
+    /// Uses the cached PID so it can be called from any isolation context.
+    nonisolated func killSync() {
+        let pid = _backendPID
+        guard pid > 0 else { return }
+        kill(pid, SIGTERM)
+        usleep(300_000) // 300ms
+        // Force-kill if still alive.
+        if kill(pid, 0) == 0 {
+            kill(pid, SIGKILL)
+        }
     }
 
     // MARK: - RPC call helpers
@@ -332,6 +371,11 @@ final class PythonBridge: ObservableObject {
             }
         case "progress":
             let p = TaskProgress(fromParams: params)
+            // Ignore updates for tasks that have been cancelled/cleared
+            // (exact match or parent prefix match).
+            let dominated = cancelledTaskIDs.contains(p.id)
+                || cancelledTaskIDs.contains(where: { p.id.hasPrefix($0 + "_") })
+            guard !dominated else { break }
             if var existing = self.activeProgress[p.id] {
                 existing.update(with: params)
                 self.activeProgress[p.id] = existing
@@ -342,6 +386,7 @@ final class PythonBridge: ObservableObject {
             // briefly show the 100% state.
             if p.percent >= 100 {
                 let id = p.id
+                cancelledTaskIDs.insert(id)
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     self?.activeProgress.removeValue(forKey: id)
@@ -349,6 +394,10 @@ final class PythonBridge: ObservableObject {
             }
         case "shutting_down":
             self.backendStatus = "shutting_down"
+        case "realtime_error":
+            if let msg = params["error"]?.stringValue {
+                self.lastError = "リアルタイムVCエラー: \(msg)"
+            }
         default:
             break
         }
@@ -390,7 +439,7 @@ final class PythonBridge: ObservableObject {
     private func openLogFile() {
         let fm = FileManager.default
         let libLogs = fm.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Logs/RVC-WebUI", isDirectory: true)
+            .appendingPathComponent("Logs/RVC-Swift", isDirectory: true)
         guard let dir = libLogs else { return }
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("bridge.log")

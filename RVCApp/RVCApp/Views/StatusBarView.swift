@@ -28,14 +28,6 @@ struct StatusBarView: View {
             gpuGauge
 
             Spacer()
-
-            HStack(spacing: 6) {
-                Image(systemName: "cpu.fill")
-                    .foregroundStyle(.secondary)
-                Text(bridge.resourceStats.deviceLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -44,22 +36,22 @@ struct StatusBarView: View {
 
     @ViewBuilder
     private var gpuGauge: some View {
-        let backend = bridge.resourceStats.gpuBackend
-        if backend == "mps" || backend == "cuda" {
-            let usedMB = bridge.resourceStats.gpuMemoryUsedMB
-            // We don't always know the GPU max, so show the used MB as a text
-            // with a soft percentage against a rolling ceiling of 1024 MB units.
-            let ceiling = max(512, usedMB * 2)
+        let stats = bridge.resourceStats
+        if stats.gpuBackend == "mps" || stats.gpuBackend == "cuda" {
             HStack(spacing: 4) {
                 Text("GPU")
                     .font(.caption).bold()
                     .foregroundStyle(.secondary)
-                ProgressView(value: Double(usedMB), total: Double(ceiling))
+                ProgressView(value: min(stats.gpuPercent, 100), total: 100)
                     .progressViewStyle(.linear)
                     .frame(width: 80)
-                Text("\(usedMB) MB")
+                Text("\(String(format: "%.0f", stats.gpuPercent))%")
                     .font(.caption.monospacedDigit())
-                    .frame(minWidth: 60, alignment: .trailing)
+                    .frame(minWidth: 36, alignment: .trailing)
+                Text("\(stats.gpuMemoryUsedMB)MB")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 52, alignment: .trailing)
             }
         }
     }

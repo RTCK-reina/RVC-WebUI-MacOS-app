@@ -33,29 +33,30 @@ struct TrainingView: View {
     }
 
     // Experiment config
-    @State private var expName: String = ""
-    @State private var author: String = ""
-    @State private var trainsetDir: String = ""
-    @State private var srName: String = "40k"
-    @State private var ifF0: Bool = true
-    @State private var version: String = "v2"
+    @AppStorage("train.expName") private var expName: String = ""
+    @AppStorage("train.author") private var author: String = ""
+    @AppStorage("train.trainsetDir") private var trainsetDir: String = ""
+    @AppStorage("train.srName") private var srName: String = "40k"
+    @AppStorage("train.ifF0") private var ifF0: Bool = true
+    @AppStorage("train.version") private var version: String = "v2"
 
     // Data processing
-    @State private var f0Method: String = "rmvpe"
-    @State private var nProcess: Double = 4
-    @State private var gpus: String = "0"
+    @AppStorage("train.f0Method") private var f0Method: String = "rmvpe"
+    @AppStorage("train.nProcess") private var nProcess: Double =
+        Double(max(1, ProcessInfo.processInfo.activeProcessorCount - 1))
+    private let gpus: String = "0"  // Always "0" on macOS (MPS/CPU)
 
     // Training params
-    @State private var saveEpoch: Double = 5
-    @State private var totalEpoch: Double = 200
-    @State private var batchSize: Double = 4
-    @State private var ifSaveLatest: Bool = true
-    @State private var ifCacheGpu: Bool = false
-    @State private var ifSaveEveryWeights: Bool = true
-    @State private var spkId: Double = 0
-    @State private var pretrainedG: String = ""
-    @State private var pretrainedD: String = ""
-    @State private var preset: TrainingPreset = .balanced
+    @AppStorage("train.saveEpoch") private var saveEpoch: Double = 5
+    @AppStorage("train.totalEpoch") private var totalEpoch: Double = 200
+    @AppStorage("train.batchSize") private var batchSize: Double = 4
+    @AppStorage("train.ifSaveLatest") private var ifSaveLatest: Bool = true
+    @AppStorage("train.ifCacheGpu") private var ifCacheGpu: Bool = false
+    @AppStorage("train.ifSaveEveryWeights") private var ifSaveEveryWeights: Bool = true
+    @AppStorage("train.spkId") private var spkId: Double = 0
+    @AppStorage("train.pretrainedG") private var pretrainedG: String = ""
+    @AppStorage("train.pretrainedD") private var pretrainedD: String = ""
+    @AppStorage("train.preset") private var preset: TrainingPreset = .balanced
 
     // Runtime state
     @State private var currentTaskID: String = ""
@@ -109,21 +110,11 @@ struct TrainingView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .onChange(of: preset) { _ in applyTrainingPreset() }
 
                 Text(preset.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                HStack {
-                    Button("推奨値を適用") {
-                        applyTrainingPreset()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Text("現在デバイス: \(bridge.resourceStats.deviceLabel)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
             .padding(8)
         }
@@ -179,19 +170,13 @@ struct TrainingView: View {
                     }
                     .frame(width: 260)
                     HStack {
-                        Text("並列プロセス数").foregroundStyle(.secondary)
-                        Stepper(value: $nProcess, in: 1...16, step: 1) {
+                        let maxProcs = ProcessInfo.processInfo.activeProcessorCount
+                        Text("並列プロセス数 (最大 \(maxProcs))").foregroundStyle(.secondary)
+                        Stepper(value: $nProcess, in: 1...Double(maxProcs), step: 1) {
                             Text("\(Int(nProcess))")
                                 .frame(width: 40)
                         }
                     }
-                }
-                HStack {
-                    Text("GPUs (CUDA: \"0-1\" 等、MPS/CPU は \"0\")")
-                        .foregroundStyle(.secondary)
-                    TextField("0", text: $gpus)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 100)
                 }
                 HStack {
                     Button("1. データ前処理") { Task { await runPreprocess() } }
@@ -300,14 +285,15 @@ struct TrainingView: View {
     }
 
     private func applyTrainingPreset() {
-        let cpuWorkers = min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
+        let totalCPU = ProcessInfo.processInfo.activeProcessorCount
+        let defaultProcs = max(1, totalCPU - 1)
         let gpuBackend = bridge.resourceStats.gpuBackend
         let gpuEnabled = (gpuBackend == "mps" || gpuBackend == "cuda")
 
         switch preset {
         case .quality:
             f0Method = "rmvpe"
-            nProcess = Double(min(cpuWorkers, 6))
+            nProcess = Double(max(1, defaultProcs - 1))
             saveEpoch = 5
             totalEpoch = max(totalEpoch, 300)
             batchSize = gpuEnabled ? 4 : 2
@@ -316,7 +302,7 @@ struct TrainingView: View {
             ifSaveEveryWeights = true
         case .balanced:
             f0Method = "rmvpe"
-            nProcess = Double(min(cpuWorkers, 6))
+            nProcess = Double(defaultProcs)
             saveEpoch = 5
             totalEpoch = max(200, min(totalEpoch, 400))
             batchSize = gpuEnabled ? 4 : 2
@@ -325,7 +311,7 @@ struct TrainingView: View {
             ifSaveEveryWeights = true
         case .speed:
             f0Method = ifF0 ? "fcpe" : "pm"
-            nProcess = Double(cpuWorkers)
+            nProcess = Double(totalCPU)
             saveEpoch = 10
             totalEpoch = min(totalEpoch, 180)
             batchSize = gpuEnabled ? 8 : 3
@@ -366,7 +352,10 @@ struct TrainingView: View {
     private func runStage(method: String, params: JSONValue) async {
         errorMsg = nil
         isRunning = true
-        defer { isRunning = false }
+        defer {
+            isRunning = false
+            currentTaskID = ""
+        }
         let id = params["task_id"]?.stringValue ?? makeTaskID(method)
         currentTaskID = id
         do {
@@ -381,11 +370,21 @@ struct TrainingView: View {
             if let m = r.messages, !m.isEmpty {
                 logText = (logText + "\n" + m.joined(separator: "\n")).trimmingCharacters(in: .whitespaces)
             }
-            if r.status != "success" {
+            if r.status == "success" {
+                AppNotification.send(
+                    title: "トレーニング完了",
+                    body: "\(method) が正常に終了しました。")
+            } else {
                 errorMsg = r.error ?? "学習ステージ失敗: \(method)"
+                AppNotification.send(
+                    title: "トレーニング失敗",
+                    body: errorMsg ?? method)
             }
         } catch {
             errorMsg = error.localizedDescription
+            AppNotification.send(
+                title: "トレーニング失敗",
+                body: error.localizedDescription)
         }
     }
 
@@ -394,6 +393,7 @@ struct TrainingView: View {
         Task {
             _ = try? await bridge.callRaw("cancel",
                 params: .object(["task_id": .string(id)]))
+            bridge.clearProgress(for: id)
         }
     }
 

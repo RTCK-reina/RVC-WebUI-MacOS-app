@@ -111,22 +111,24 @@ enum UVR5ModelInfo {
 struct SeparationView: View {
     @EnvironmentObject var bridge: PythonBridge
 
-    @State private var modelName: String = ""
-    @State private var dirPath: String = ""
-    @State private var paths: [String] = []
-    @State private var outputVocal: String = ""
-    @State private var outputIns: String = ""
-    @State private var agg: Double = 10
-    @State private var format: String = "flac"
+    @AppStorage("sep.modelName") private var modelName: String = ""
+    @AppStorage("sep.dirPath") private var dirPath: String = ""
+    @State private var paths: [String] = []  // session-specific file list
+    @AppStorage("sep.outputVocal") private var outputVocal: String = ""
+    @AppStorage("sep.outputIns") private var outputIns: String = ""
+    @AppStorage("sep.agg") private var agg: Double = 10
+    @AppStorage("sep.format") private var format: String = "flac"
 
     // Second-pass polish (dereverb / de-echo applied to the extracted vocals).
-    @State private var polishEnabled: Bool = false
-    @State private var polishModel: String = "onnx_dereverb_By_FoxJoy"
+    @AppStorage("sep.polishEnabled") private var polishEnabled: Bool = false
+    @AppStorage("sep.polishModel") private var polishModel: String = "onnx_dereverb_By_FoxJoy"
 
     @State private var taskID = ""
     @State private var isRunning = false
     @State private var errorMessage: String?
     @State private var lastMessages: [String] = []
+    @State private var lastVocalDir: String?
+    @State private var lastInsDir: String?
     @State private var lastPolishedDir: String?
 
     var body: some View {
@@ -212,16 +214,17 @@ struct SeparationView: View {
                         .foregroundStyle(.red)
                         .background(.red.opacity(0.1), in: .rect(cornerRadius: 8))
                 }
-                if let polished = lastPolishedDir {
-                    GroupBox("仕上げ完了") {
-                        HStack {
-                            Label("仕上げ済みボーカルは \(polished) に保存されました。",
-                                  systemImage: "sparkles")
-                                .font(.caption)
-                            Spacer()
-                            Button("Finderで開く") {
-                                NSWorkspace.shared.activateFileViewerSelecting(
-                                    [URL(fileURLWithPath: polished)])
+                if lastVocalDir != nil || lastInsDir != nil || lastPolishedDir != nil {
+                    GroupBox("保存先") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let vocal = lastVocalDir {
+                                outputRow(label: "ボーカル", path: vocal, icon: "music.mic")
+                            }
+                            if let ins = lastInsDir {
+                                outputRow(label: "伴奏", path: ins, icon: "music.note.list")
+                            }
+                            if let polished = lastPolishedDir {
+                                outputRow(label: "仕上げ済み", path: polished, icon: "sparkles")
                             }
                         }
                         .padding(8)
@@ -251,7 +254,7 @@ struct SeparationView: View {
                 Toggle(isOn: $polishEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("分離後に仕上げを自動でかける").bold()
-                        Text("抽出したボーカルをもう一度別モデルに通して、エコー・リバーブをきれいに除去します。")
+                        Text("抽出したボーカルをもう一度別モデルに通して、エコー・リバーブを除去します。2パス処理のため音質がわずかに劣化する場合があります。エコーやリバーブが強いソース向けです。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -335,7 +338,7 @@ struct SeparationView: View {
                 guideRow(icon: "waveform.path", title: "エコー・残響を取り除く",
                          body: "まず ONNX DeReverb、強い残響なら DeEcho (強)、両方なら DeEcho + DeReverb。")
                 guideRow(icon: "arrow.triangle.branch", title: "ボーカル抽出後の仕上げ",
-                         body: "分離後のボーカルを再度 ONNX DeReverb か DeEcho 系にかけると更にクリーンに。")
+                         body: "エコー・リバーブが強い音源に有効。通常のスタジオ音源では仕上げなしの方が高品質な場合があります。")
             }
             .padding(8)
         }
@@ -372,6 +375,25 @@ struct SeparationView: View {
         .background(.blue.opacity(0.07), in: .rect(cornerRadius: 8))
     }
 
+    private func outputRow(label: String, path: String, icon: String) -> some View {
+        HStack {
+            Label(label, systemImage: icon)
+                .font(.caption).bold()
+                .frame(width: 100, alignment: .leading)
+            Text(path)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Button("Finderで開く") {
+                NSWorkspace.shared.activateFileViewerSelecting(
+                    [URL(fileURLWithPath: path)])
+            }
+            .font(.caption)
+        }
+    }
+
     private func labeledRow(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text(label)
@@ -403,11 +425,16 @@ struct SeparationView: View {
     private func run() async {
         errorMessage = nil
         lastMessages = []
+        lastVocalDir = nil
+        lastInsDir = nil
         lastPolishedDir = nil
         let id = "uvr5_\(Int(Date().timeIntervalSince1970 * 1000))"
         taskID = id
         isRunning = true
-        defer { isRunning = false }
+        defer {
+            isRunning = false
+            taskID = ""
+        }
 
         var paramsDict: [String: JSONValue] = [
             "task_id": .string(id),
@@ -429,12 +456,24 @@ struct SeparationView: View {
                 params: JSONValue.object(paramsDict),
                 timeout: 7200)
             lastMessages = r.messages ?? []
+            lastVocalDir = r.output_vocal
+            lastInsDir = r.output_accompaniment
             lastPolishedDir = r.polished_dir
-            if r.status != "success" {
+            if r.status == "success" {
+                AppNotification.send(
+                    title: "音声分離が完了しました",
+                    body: "ボーカルと伴奏の分離が正常に終了しました。")
+            } else {
                 errorMessage = "分離に失敗しました"
+                AppNotification.send(
+                    title: "音声分離に失敗しました",
+                    body: "エラーが発生しました。ログを確認してください。")
             }
         } catch {
             errorMessage = error.localizedDescription
+            AppNotification.send(
+                title: "音声分離に失敗しました",
+                body: error.localizedDescription)
         }
     }
 
@@ -443,6 +482,7 @@ struct SeparationView: View {
         Task {
             _ = try? await bridge.callRaw("cancel",
                 params: .object(["task_id": .string(id)]))
+            bridge.clearProgress(for: id)
         }
     }
 }

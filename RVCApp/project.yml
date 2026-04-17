@@ -6,6 +6,8 @@ options:
   deploymentTarget:
     macOS: "13.0"
   createIntermediateGroups: true
+  # All build products go to ../build so there's always one canonical .app.
+  settingPresets: []
 settings:
   base:
     SWIFT_VERSION: "5.9"
@@ -15,8 +17,11 @@ settings:
     CODE_SIGN_ENTITLEMENTS: RVCApp/RVCApp.entitlements
     INFOPLIST_FILE: RVCApp/Info.plist
     PRODUCT_BUNDLE_IDENTIFIER: app.rvc.webui
-    PRODUCT_NAME: RVC-WebUI
+    PRODUCT_NAME: RVC Swift
     ENABLE_USER_SCRIPT_SANDBOXING: NO
+    SYMROOT: $(SRCROOT)/../build
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
 targets:
   RVCApp:
     type: application

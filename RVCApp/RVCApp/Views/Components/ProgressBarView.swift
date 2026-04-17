@@ -77,6 +77,7 @@ struct ActiveTasksList: View {
                             _ = try? await bridge.callRaw(
                                 "cancel",
                                 params: .object(["task_id": .string(taskID)]))
+                            bridge.clearProgress(for: taskID)
                         }
                     })
             }

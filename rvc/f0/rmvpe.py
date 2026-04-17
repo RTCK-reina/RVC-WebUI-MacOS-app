@@ -135,6 +135,66 @@ class RMVPE(F0Predictor):
 
         return self._interpolate_f0(self._resize_f0(f0, p_len))[0]
 
+    def compute_f0_batch(
+        self,
+        wavs: list,
+        p_lens: Optional[list] = None,
+        filter_radius: Optional[Union[int, float]] = None,
+    ):
+        """Batch F0 extraction: run the E2E model once on multiple audios.
+
+        Extracts mel spectrograms individually (FFT is sequential), pads them
+        to the same frame count, runs the model in a single batched forward
+        pass, then decodes each output separately.
+        """
+        n = len(wavs)
+        if n == 0:
+            return []
+        if p_lens is None:
+            p_lens = [w.shape[0] // self.hop_length for w in wavs]
+
+        # Extract mels individually (FFT can't be trivially batched for
+        # variable-length inputs).
+        mels = []
+        frame_counts = []
+        for wav in wavs:
+            if not torch.is_tensor(wav):
+                wav = torch.from_numpy(wav)
+            mel = self.mel_extractor(
+                wav.float().to(self.device).unsqueeze(0), center=True
+            )
+            mels.append(mel.squeeze(0))  # [128, T_i]
+            frame_counts.append(mel.shape[-1])
+
+        # Pad all mels to the max frame count (aligned to 32).
+        max_frames = max(frame_counts)
+        max_padded = 32 * ((max_frames - 1) // 32 + 1)
+        padded = []
+        for mel in mels:
+            pad_size = max_padded - mel.shape[-1]
+            if pad_size > 0:
+                mel = F.pad(mel, (0, pad_size), mode="constant")
+            padded.append(mel)
+        batch_mel = torch.stack(padded, dim=0)  # [B, 128, T_max]
+
+        # Single batched forward pass.
+        with torch.no_grad():
+            batch_mel = batch_mel.half() if self.is_half else batch_mel.float()
+            batch_hidden = self.model(batch_mel)  # [B, T_max, 360]
+
+        # Decode each output individually.
+        results = []
+        for i in range(n):
+            t = frame_counts[i]
+            hidden = batch_hidden[i, :t].cpu().numpy()
+            if self.is_half:
+                hidden = hidden.astype("float32")
+            f0 = self._decode(hidden, thred=filter_radius)
+            results.append(
+                self._interpolate_f0(self._resize_f0(f0, p_lens[i]))[0]
+            )
+        return results
+
     def _to_local_average_cents(self, salience, threshold=0.05):
         center = np.argmax(salience, axis=1)  # 帧长#index
         salience = np.pad(salience, ((0, 0), (4, 4)))  # 帧长,368
