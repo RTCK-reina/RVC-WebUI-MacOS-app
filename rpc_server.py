@@ -1056,8 +1056,7 @@ class _RealtimeVC:
                 F.conv1d(conv_input ** 2,
                          torch.ones(1, 1, self.sola_buffer_frame,
                                     device=self.device_str)) + 1e-8)
-            _, sola_offset = torch.max(cor_nom[0, 0] / cor_den[0, 0])
-            sola_offset = sola_offset.item()
+            sola_offset = torch.argmax(cor_nom[0, 0] / cor_den[0, 0]).item()
             infer_wav = infer_wav[sola_offset:]
             infer_wav[:self.sola_buffer_frame] *= self.fade_in_window
             infer_wav[:self.sola_buffer_frame] += self.sola_buffer * self.fade_out_window
