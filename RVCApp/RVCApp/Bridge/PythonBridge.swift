@@ -394,6 +394,10 @@ final class PythonBridge: ObservableObject {
             }
         case "shutting_down":
             self.backendStatus = "shutting_down"
+        case "realtime_error":
+            if let msg = params["error"]?.stringValue {
+                self.lastError = "リアルタイムVCエラー: \(msg)"
+            }
         default:
             break
         }

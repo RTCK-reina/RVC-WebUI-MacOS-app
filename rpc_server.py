@@ -101,6 +101,7 @@ logger = logging.getLogger("rpc_server")
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
 
 from configs import Config  # noqa: E402
 from infer.lib.audio import save_audio  # noqa: E402
@@ -932,6 +933,268 @@ def rpc_list_audio_devices(params: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Realtime VC — streams audio through RVC using sounddevice.
+# ---------------------------------------------------------------------------
+
+class _RealtimeVC:
+    """Manages the sounddevice stream and per-block RVC inference."""
+
+    def __init__(self, rvc_obj, samplerate: int, channels,
+                 block_time: float, threshold: float, f0method: str,
+                 protect: float, device_str: str,
+                 input_device=None, output_device=None):
+        import sounddevice as sd
+        import torchaudio.transforms as tat
+
+        self.rvc = rvc_obj
+        self.samplerate = samplerate
+        self.channels = channels
+        self.out_channels = channels[1] if isinstance(channels, tuple) else channels
+        self.threshold = threshold
+        self.f0method = f0method
+        self.protect = protect
+        self.device_str = device_str
+        self.stream = None
+        self._error_count = 0
+        self._error_notified = False
+
+        zc = samplerate // 100
+        self.zc = zc
+        self.block_frame = int(np.round(block_time * samplerate / zc)) * zc
+        self.block_frame_16k = 160 * self.block_frame // zc
+        crossfade_time = 0.05
+        self.crossfade_frame = int(np.round(crossfade_time * samplerate / zc)) * zc
+        self.sola_buffer_frame = min(self.crossfade_frame, 4 * zc)
+        self.sola_search_frame = zc
+        extra_time = 2.5
+        self.extra_frame = int(np.round(extra_time * samplerate / zc)) * zc
+        total_len = (self.extra_frame + self.crossfade_frame
+                     + self.sola_search_frame + self.block_frame)
+        self.input_wav = torch.zeros(total_len, device=device_str, dtype=torch.float32)
+        self.input_wav_res = torch.zeros(
+            160 * total_len // zc, device=device_str, dtype=torch.float32)
+        self.rms_buffer = np.zeros(4 * zc, dtype="float32")
+        self.sola_buffer = torch.zeros(
+            self.sola_buffer_frame, device=device_str, dtype=torch.float32)
+        self.skip_head = self.extra_frame // zc
+        self.return_length = (
+            self.block_frame + self.sola_buffer_frame + self.sola_search_frame
+        ) // zc
+        self.fade_in_window = (
+            torch.sin(0.5 * np.pi * torch.linspace(
+                0.0, 1.0, steps=self.sola_buffer_frame,
+                device=device_str, dtype=torch.float32)) ** 2)
+        self.fade_out_window = 1 - self.fade_in_window
+        self.resampler = tat.Resample(
+            orig_freq=samplerate, new_freq=16000, dtype=torch.float32
+        ).to(device_str)
+        if rvc_obj.tgt_sr != samplerate:
+            self.resampler2 = tat.Resample(
+                orig_freq=rvc_obj.tgt_sr, new_freq=samplerate, dtype=torch.float32
+            ).to(device_str)
+        else:
+            self.resampler2 = None
+
+        self.stream = sd.Stream(
+            callback=self._audio_callback,
+            blocksize=self.block_frame,
+            samplerate=samplerate,
+            channels=channels,
+            dtype="float32",
+            device=(input_device, output_device),
+        )
+        self.stream.start()
+
+    def _audio_callback(self, indata, outdata, frames, times, status):
+        import librosa
+        try:
+            indata_mono = librosa.to_mono(indata.T)
+            # Noise gate
+            if self.threshold > -60:
+                indata_mono = np.append(self.rms_buffer, indata_mono)
+                rms = librosa.feature.rms(
+                    y=indata_mono, frame_length=4 * self.zc, hop_length=self.zc
+                )[:, 2:]
+                self.rms_buffer[:] = indata_mono[-4 * self.zc:]
+                indata_mono = indata_mono[2 * self.zc - self.zc // 2:]
+                db_thresh = (
+                    librosa.amplitude_to_db(rms, ref=1.0)[0] < self.threshold)
+                for i in range(db_thresh.shape[0]):
+                    if db_thresh[i]:
+                        indata_mono[i * self.zc:(i + 1) * self.zc] = 0
+                indata_mono = indata_mono[self.zc // 2:]
+
+            # Shift input buffer
+            self.input_wav[:-self.block_frame] = self.input_wav[self.block_frame:].clone()
+            self.input_wav[-indata_mono.shape[0]:] = torch.from_numpy(indata_mono).to(
+                self.device_str)
+
+            # Resample to 16k
+            self.input_wav_res[:-self.block_frame_16k] = (
+                self.input_wav_res[self.block_frame_16k:].clone())
+            self.input_wav_res[-160 * (indata_mono.shape[0] // self.zc + 1):] = (
+                self.resampler(self.input_wav[-indata_mono.shape[0] - 2 * self.zc:])[160:])
+
+            # RVC inference
+            infer_wav = self.rvc.infer(
+                self.input_wav_res,
+                self.block_frame_16k,
+                self.skip_head,
+                self.return_length,
+                self.f0method,
+                self.protect,
+            )
+            if self.resampler2 is not None:
+                infer_wav = self.resampler2(infer_wav)
+
+            # SOLA crossfade
+            conv_input = infer_wav[
+                None, None, :self.sola_buffer_frame + self.sola_search_frame]
+            cor_nom = F.conv1d(conv_input, self.sola_buffer[None, None, :])
+            cor_den = torch.sqrt(
+                F.conv1d(conv_input ** 2,
+                         torch.ones(1, 1, self.sola_buffer_frame,
+                                    device=self.device_str)) + 1e-8)
+            _, sola_offset = torch.max(cor_nom[0, 0] / cor_den[0, 0])
+            sola_offset = sola_offset.item()
+            infer_wav = infer_wav[sola_offset:]
+            infer_wav[:self.sola_buffer_frame] *= self.fade_in_window
+            infer_wav[:self.sola_buffer_frame] += self.sola_buffer * self.fade_out_window
+            self.sola_buffer[:] = infer_wav[
+                self.block_frame:self.block_frame + self.sola_buffer_frame]
+            outdata[:] = (
+                infer_wav[:self.block_frame]
+                .repeat(self.out_channels, 1).t().cpu().numpy())
+            self._error_count = 0  # Reset on success.
+        except Exception as exc:
+            outdata[:] = 0
+            self._error_count += 1
+            if self._error_count <= 3:
+                logger.exception("realtime callback error #%d", self._error_count)
+            if self._error_count >= 10 and not self._error_notified:
+                self._error_notified = True
+                try:
+                    send_notification("realtime_error", {
+                        "error": str(exc),
+                        "count": self._error_count,
+                    })
+                except Exception:
+                    pass
+
+    def stop(self):
+        if self.stream is not None:
+            self.stream.abort()
+            self.stream.close()
+            self.stream = None
+
+
+def rpc_realtime_start(params: dict) -> dict:
+    global app_state
+    import sounddevice as sd
+
+    # Stop any existing session.
+    if app_state.realtime is not None:
+        try:
+            app_state.realtime.stop()
+        except Exception:
+            pass
+        app_state.realtime = None
+
+    pth_path = params.get("pth_path", "")
+    index_path = params.get("index_path", "")
+    pitch = params.get("pitch", 0)
+    formant = params.get("formant", 0)
+    index_rate = params.get("index_rate", 0)
+    threshold = params.get("threshold", -60)
+    block_time = params.get("block_time", 0.25)
+    sample_rate = int(params.get("sample_rate", 48000))
+    f0method = params.get("f0_method", "fcpe")
+    protect = params.get("protect", 0.33)
+    input_device = params.get("input_device")
+    output_device = params.get("output_device")
+
+    if input_device is not None:
+        input_device = int(input_device)
+    if output_device is not None:
+        output_device = int(output_device)
+
+    device = app_state.config.device
+    is_half = app_state.config.is_half
+
+    try:
+        from infer.lib.rtrvc import RVC
+        rvc_obj = RVC(
+            key=pitch,
+            formant=formant,
+            pth_path=pth_path,
+            index_path=index_path,
+            index_rate=index_rate,
+            n_cpu=min(os.cpu_count() or 4, 4),
+            device=device,
+            is_half=is_half,
+        )
+    except Exception as e:
+        return {"status": "error", "error": f"Model load failed: {e}"}
+
+    # Input is always mono (we downmix). Output channels from the device.
+    out_channels = 2
+    if output_device is not None:
+        try:
+            dev_info = sd.query_devices(output_device)
+            out_channels = min(dev_info.get("max_output_channels", 2), 2)
+        except Exception:
+            out_channels = 2
+    channels = (1, out_channels)
+
+    try:
+        rt = _RealtimeVC(
+            rvc_obj=rvc_obj,
+            samplerate=sample_rate,
+            channels=channels,
+            block_time=block_time,
+            threshold=threshold,
+            f0method=f0method,
+            protect=protect,
+            device_str=device,
+            input_device=input_device,
+            output_device=output_device,
+        )
+    except Exception as e:
+        return {"status": "error", "error": f"Stream start failed: {e}"}
+
+    app_state.realtime = rt
+    app_state.status("realtime")
+    return {
+        "status": "success",
+        "sample_rate": sample_rate,
+        "model_sr": rvc_obj.tgt_sr,
+    }
+
+
+def rpc_realtime_stop(params: dict) -> dict:
+    global app_state
+    if app_state.realtime is not None:
+        app_state.realtime.stop()
+        app_state.realtime = None
+    app_state.status("idle")
+    return {"status": "stopped"}
+
+
+def rpc_realtime_update_params(params: dict) -> dict:
+    global app_state
+    rt = app_state.realtime
+    if rt is None:
+        return {"status": "not_running"}
+    if "pitch" in params:
+        rt.rvc.set_key(params["pitch"])
+    if "formant" in params:
+        rt.rvc.set_formant(params["formant"])
+    if "index_rate" in params:
+        rt.rvc.set_index_rate(params["index_rate"])
+    return {"status": "updated"}
+
+
 def rpc_cancel(params: dict) -> dict:
     tid = params.get("task_id", "")
     return {"cancelled": _cancel_task(tid)}
@@ -969,6 +1232,9 @@ METHODS: Dict[str, Callable[[dict], Any]] = {
     "model_extract": rpc_model_extract,
     "export_onnx": rpc_export_onnx,
     "list_audio_devices": rpc_list_audio_devices,
+    "realtime_start": rpc_realtime_start,
+    "realtime_stop": rpc_realtime_stop,
+    "realtime_update_params": rpc_realtime_update_params,
     "cancel": rpc_cancel,
     "shutdown": rpc_shutdown,
 }
@@ -1010,6 +1276,7 @@ BLOCKING_METHODS = {
     "model_merge",
     "model_extract",
     "export_onnx",
+    "realtime_start",
     "preprocess",
     "extract_f0",
     "train",
