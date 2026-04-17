@@ -1,5 +1,5 @@
 #!/bin/bash
-# RVC-WebUI Docker ビルド＆起動スクリプト
+# RVC Swift Docker ビルド＆起動スクリプト
 cd "$(dirname "$0")"
 mkdir -p weights opt
 

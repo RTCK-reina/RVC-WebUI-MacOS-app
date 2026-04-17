@@ -187,12 +187,18 @@ def _unregister_task(task_id: str) -> None:
 
 
 def _cancel_task(task_id: str) -> bool:
+    """Cancel a task and all its children (prefix match).
+
+    train_all registers sub-stages as "{parent_id}_preprocess", etc.
+    Cancelling the parent ID cascades to all sub-stages.
+    """
+    cancelled_any = False
     with _tasks_lock:
-        t = _tasks.get(task_id)
-    if t is None:
-        return False
-    t.cancel_event.set()
-    return True
+        for tid, t in _tasks.items():
+            if tid == task_id or tid.startswith(task_id + "_"):
+                t.cancel_event.set()
+                cancelled_any = True
+    return cancelled_any
 
 
 def emit_progress(task_id: str, percent: float, message: str, phase: str = "") -> None:
@@ -206,6 +212,70 @@ def emit_progress(task_id: str, percent: float, message: str, phase: str = "") -
             "timestamp": time.time(),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Subprocess-isolated worker runner.
+# ---------------------------------------------------------------------------
+
+import multiprocessing as _mp
+
+def _run_in_subprocess(
+    target: callable,
+    args: tuple,
+    cancel_event: threading.Event,
+    task_id: str,
+    poll_interval: float = 0.3,
+) -> dict:
+    """Run *target* in a child process; kill it if cancel_event fires.
+
+    *target(queue, *args)* must put its result as a dict onto the queue.
+    Progress dicts ``{"progress": (percent, message, phase)}`` are forwarded
+    via emit_progress.  The final dict is expected to have a "status" key.
+    """
+    ctx = _mp.get_context("spawn")
+    queue = ctx.Queue()
+    proc = ctx.Process(target=target, args=(queue, *args), daemon=True)
+    proc.start()
+    result: dict = {"status": "error", "error": "worker did not respond"}
+    try:
+        while proc.is_alive():
+            if cancel_event.is_set():
+                proc.terminate()
+                proc.join(timeout=3)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(timeout=2)
+                return {"status": "cancelled"}
+            # Drain the queue.
+            while not queue.empty():
+                try:
+                    item = queue.get_nowait()
+                except Exception:
+                    break
+                if isinstance(item, dict):
+                    if "progress" in item:
+                        pct, msg, phase = item["progress"]
+                        emit_progress(task_id, pct, msg, phase)
+                    else:
+                        result = item
+            proc.join(timeout=poll_interval)
+        # Drain remaining items after process exits.
+        while not queue.empty():
+            try:
+                item = queue.get_nowait()
+            except Exception:
+                break
+            if isinstance(item, dict) and "progress" not in item:
+                result = item
+            elif isinstance(item, dict) and "progress" in item:
+                pct, msg, phase = item["progress"]
+                emit_progress(task_id, pct, msg, phase)
+    finally:
+        if proc.is_alive():
+            proc.kill()
+            proc.join(timeout=2)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -269,23 +339,34 @@ def _resource_monitor(stop_event: threading.Event):
         # MPS / CUDA memory.
         try:
             if torch.backends.mps.is_available():
-                stats["gpu_memory_used_mb"] = int(
-                    torch.mps.current_allocated_memory() / (1024 * 1024)
-                )
+                used = torch.mps.current_allocated_memory()
+                stats["gpu_memory_used_mb"] = int(used / (1024 * 1024))
                 try:
-                    stats["gpu_memory_driver_mb"] = int(
-                        torch.mps.driver_allocated_memory() / (1024 * 1024)
-                    )
+                    driver = torch.mps.driver_allocated_memory()
+                    stats["gpu_memory_driver_mb"] = int(driver / (1024 * 1024))
                 except Exception:
-                    pass
+                    driver = used
+                # Apple Silicon: recommend_max or physical memory as ceiling.
+                try:
+                    total = torch.mps.recommended_max_memory()
+                    stats["gpu_memory_total_mb"] = int(total / (1024 * 1024))
+                    stats["gpu_percent"] = round(driver / total * 100, 1) if total > 0 else 0.0
+                except Exception:
+                    # Fallback: use system memory as upper bound for unified memory.
+                    if psutil:
+                        total = psutil.virtual_memory().total
+                        stats["gpu_memory_total_mb"] = int(total / (1024 * 1024))
+                        stats["gpu_percent"] = round(driver / total * 100, 1) if total > 0 else 0.0
                 stats["gpu_backend"] = "mps"
             elif torch.cuda.is_available():
-                stats["gpu_memory_used_mb"] = int(
-                    torch.cuda.memory_allocated() / (1024 * 1024)
-                )
+                used = torch.cuda.memory_allocated()
+                total = torch.cuda.get_device_properties(0).total_mem
+                stats["gpu_memory_used_mb"] = int(used / (1024 * 1024))
                 stats["gpu_memory_reserved_mb"] = int(
                     torch.cuda.memory_reserved() / (1024 * 1024)
                 )
+                stats["gpu_memory_total_mb"] = int(total / (1024 * 1024))
+                stats["gpu_percent"] = round(used / total * 100, 1) if total > 0 else 0.0
                 stats["gpu_backend"] = "cuda"
             else:
                 stats["gpu_backend"] = "cpu"
@@ -393,7 +474,7 @@ def _timestamp() -> str:
 
 
 def _default_output_path(input_path: str, model_sid: str, fmt: str, subdir: str) -> str:
-    out_root = Path(os.environ.get("output_root") or (Path.home() / "Documents" / "RVC-WebUI" / "output"))
+    out_root = Path(os.environ.get("output_root") or (Path.home() / "Documents" / "RVC-Swift" / "output"))
     out_dir = out_root / subdir
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(input_path).stem
@@ -480,7 +561,7 @@ def rpc_vc_multi(params: dict) -> dict:
     paths = params.get("paths", []) or []
     fmt = params.get("format", "flac")
     out_root = params.get("output_dir") or str(
-        Path(os.environ.get("output_root") or (Path.home() / "Documents" / "RVC-WebUI" / "output")) / "batch" / _timestamp()
+        Path(os.environ.get("output_root") or (Path.home() / "Documents" / "RVC-Swift" / "output")) / "batch" / _timestamp()
     )
     Path(out_root).mkdir(parents=True, exist_ok=True)
 
@@ -537,24 +618,129 @@ def rpc_vc_multi(params: dict) -> dict:
         app_state.status("idle")
 
 
-def rpc_uvr5(params: dict) -> dict:
-    """Run UVR5 vocal/instrumental separation.
+def _uvr5_worker(queue, model_name, inp_root, save_root_vocal, input_paths,
+                  save_root_ins, agg, fmt, polish_model):
+    """Subprocess entry point for UVR5 separation.
 
-    Optional second-pass "polish": set `polish_model` to another UVR5 model
-    (typically a DeEcho/DeReverb model) and the vocal output of the first
-    pass is fed through it, with the polished result written to
-    {output_vocal}/polished/.
+    Runs the full separation (+ optional polish) and posts results/progress
+    dicts onto *queue*.  Runs in a completely separate process so the parent
+    can terminate() it at any point for instant cancellation.
+    """
+    import os, traceback, shutil
+    from pathlib import Path
+
+    class _Faux:
+        def __init__(self, name):
+            self.name = name
+
+    try:
+        from infer.modules.uvr5.modules import uvr, _is_audio_file
+
+        total = max(1, len(input_paths))
+        pass1_scale = 50.0 if polish_model else 100.0
+        messages = []
+
+        # --- Pass 1 -------------------------------------------------------
+        faux_paths = [_Faux(p) for p in input_paths]
+        done = 0
+        for msg in uvr(model_name, inp_root, save_root_vocal, faux_paths,
+                       save_root_ins, agg, fmt):
+            messages.append(msg)
+            done = min(total, msg.count("->"))
+            queue.put({"progress": (
+                (done / total) * pass1_scale,
+                f"({done}/{total}) 分離中…",
+                "separation",
+            )})
+
+        # --- Pass 2 (polish) ----------------------------------------------
+        polished_dir = None
+        if polish_model:
+            queue.put({"progress": (pass1_scale, "仕上げ準備中…", "separation")})
+            vocal_files = []
+            seen = set()
+            for d in (save_root_vocal, save_root_ins):
+                dp = Path(d)
+                if not dp.is_dir():
+                    continue
+                for p in dp.iterdir():
+                    if not p.is_file() or not p.name.startswith("vocal_"):
+                        continue
+                    if not _is_audio_file(p.name, strict=False):
+                        continue
+                    full = str(p.resolve())
+                    if full not in seen:
+                        seen.add(full)
+                        vocal_files.append(full)
+
+            if not vocal_files:
+                messages.append("Polish skipped: no vocal_* outputs found.")
+            else:
+                polished_dir = str(Path(save_root_vocal) / "polished")
+                Path(polished_dir).mkdir(parents=True, exist_ok=True)
+                residue_dir = str(Path(save_root_vocal) / "polished" / "residue")
+                Path(residue_dir).mkdir(parents=True, exist_ok=True)
+
+                scratch_dir = Path(os.environ.get("TEMP", "/tmp")) / "polish_worker"
+                scratch_dir.mkdir(parents=True, exist_ok=True)
+                scratch_paths = []
+                for vf in vocal_files:
+                    dst = scratch_dir / os.path.basename(vf)
+                    try:
+                        shutil.copy2(vf, dst)
+                        scratch_paths.append(str(dst))
+                    except Exception:
+                        pass
+
+                polish_faux = [_Faux(p) for p in scratch_paths]
+                p_total = max(1, len(scratch_paths))
+                try:
+                    p_done = 0
+                    for msg in uvr(polish_model, "", polished_dir,
+                                   polish_faux, residue_dir, agg, fmt):
+                        messages.append(msg)
+                        p_done = min(p_total, msg.count("->"))
+                        queue.put({"progress": (
+                            pass1_scale + (p_done / p_total) * (100 - pass1_scale),
+                            f"仕上げ中 ({p_done}/{p_total})",
+                            "separation",
+                        )})
+                finally:
+                    shutil.rmtree(scratch_dir, ignore_errors=True)
+
+        result = {
+            "status": "success",
+            "messages": messages,
+            "output_vocal": save_root_vocal,
+            "output_accompaniment": save_root_ins,
+        }
+        if polished_dir:
+            result["polished_dir"] = polished_dir
+        queue.put(result)
+    except Exception:
+        queue.put({"status": "error", "error": traceback.format_exc()})
+
+
+def rpc_uvr5(params: dict) -> dict:
+    """Run UVR5 vocal/instrumental separation in a subprocess.
+
+    The heavy model inference runs in a completely separate process so that
+    cancellation can terminate() it immediately — even mid-file.
     """
     assert app_state is not None
     model_name = params["model_name"]
     inp_root = params.get("input_dir", "") or ""
     paths = params.get("paths", []) or []
-    save_root_vocal = params.get("output_vocal") or str(
+    base_vocal = params.get("output_vocal") or str(
         Path(os.environ.get("output_root") or "") / "separation" / "vocals"
     )
-    save_root_ins = params.get("output_accompaniment") or str(
+    base_ins = params.get("output_accompaniment") or str(
         Path(os.environ.get("output_root") or "") / "separation" / "accompaniment"
     )
+    from datetime import datetime as _dt
+    session_stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+    save_root_vocal = str(Path(base_vocal) / session_stamp)
+    save_root_ins = str(Path(base_ins) / session_stamp)
     Path(save_root_vocal).mkdir(parents=True, exist_ok=True)
     Path(save_root_ins).mkdir(parents=True, exist_ok=True)
     agg = int(params.get("agg", 10))
@@ -565,133 +751,26 @@ def rpc_uvr5(params: dict) -> dict:
     task = _register_task(task_id)
     app_state.status("separating")
 
-    # UVR5 does not natively report progress; we estimate via file count.
-    # Defer file filtering to the uvr() function, which has stricter rules,
-    # but still pre-filter to produce an accurate total for progress.
-    from infer.modules.uvr5.modules import _is_audio_file  # lazy import
+    from infer.modules.uvr5.modules import _is_audio_file
     if inp_root:
-        # Directory scan: strict filtering (skip our own .reformatted.wav).
         input_paths = [
             str(p) for p in Path(inp_root).iterdir()
             if p.is_file() and _is_audio_file(p.name, strict=True)
         ]
     else:
-        # User-selected individual files: lenient filtering.
         raw = [p if isinstance(p, str) else p.get("name") for p in paths]
         input_paths = [p for p in raw if p and _is_audio_file(p, strict=False)]
 
-    class _Faux:
-        def __init__(self, name):
-            self.name = name
-
-    total = max(1, len(input_paths))
-    # Reserve half the progress bar for polish pass if enabled.
-    pass1_scale = 50.0 if polish_model else 100.0
-    messages = []
-    polished_dir = None
     try:
-        # --- Pass 1: primary separation -----------------------------------
-        faux_paths = [_Faux(p) for p in input_paths]
-        done = 0
-        for msg in uvr(
-            model_name, inp_root, save_root_vocal, faux_paths,
-            save_root_ins, agg, fmt,
-        ):
-            if task.cancel_event.is_set():
-                return {"status": "cancelled", "messages": messages}
-            messages.append(msg)
-            done = min(total, msg.count("->"))
-            emit_progress(
-                task_id,
-                (done / total) * pass1_scale,
-                f"({done}/{total}) 分離中…",
-                "separation",
-            )
-
-        # --- Pass 2: polish pass (optional) -------------------------------
-        if polish_model:
-            emit_progress(task_id, pass1_scale, "仕上げ準備中…", "separation")
-
-            # Collect vocal outputs produced by pass 1. Reverse-direction
-            # models (HP3, DeEcho*) write "vocal_*" into save_root_ins while
-            # non-reverse models write it into save_root_vocal — scan both.
-            vocal_files: list[str] = []
-            seen: set[str] = set()
-            for d in (save_root_vocal, save_root_ins):
-                dp = Path(d)
-                if not dp.is_dir():
-                    continue
-                for p in dp.iterdir():
-                    if not p.is_file():
-                        continue
-                    if not p.name.startswith("vocal_"):
-                        continue
-                    if not _is_audio_file(p.name, strict=False):
-                        continue
-                    full = str(p.resolve())
-                    if full in seen:
-                        continue
-                    seen.add(full)
-                    vocal_files.append(full)
-
-            if not vocal_files:
-                messages.append("Polish skipped: no vocal_* outputs found.")
-            else:
-                import shutil as _shutil
-                polished_dir = str(Path(save_root_vocal) / "polished")
-                Path(polished_dir).mkdir(parents=True, exist_ok=True)
-                residue_dir = str(Path(save_root_vocal) / "polished" / "residue")
-                Path(residue_dir).mkdir(parents=True, exist_ok=True)
-
-                # IMPORTANT: uvr() may reformat input and DELETE the original
-                # file when converting to 44100/stereo. Copy pass-1 vocals to
-                # a scratch dir first so the user's output files survive.
-                scratch_dir = Path(os.environ.get("TEMP") or "/tmp") / f"polish_{task_id}"
-                scratch_dir.mkdir(parents=True, exist_ok=True)
-                scratch_paths: list[str] = []
-                for vf in vocal_files:
-                    dst = scratch_dir / os.path.basename(vf)
-                    try:
-                        _shutil.copy2(vf, dst)
-                        scratch_paths.append(str(dst))
-                    except Exception as e:
-                        logger.warning("polish scratch copy failed for %s: %s", vf, e)
-
-                polish_paths = [_Faux(p) for p in scratch_paths]
-                p_total = max(1, len(scratch_paths))
-                p_done = 0
-                try:
-                    for msg in uvr(
-                        polish_model, "", polished_dir,
-                        polish_paths, residue_dir, agg, fmt,
-                    ):
-                        if task.cancel_event.is_set():
-                            return {
-                                "status": "cancelled",
-                                "messages": messages,
-                                "polished_dir": polished_dir,
-                            }
-                        messages.append(msg)
-                        p_done = min(p_total, msg.count("->"))
-                        emit_progress(
-                            task_id,
-                            pass1_scale + (p_done / p_total) * (100 - pass1_scale),
-                            f"仕上げ中 ({p_done}/{p_total})",
-                            "separation",
-                        )
-                finally:
-                    # Clean up scratch dir regardless of success/cancel.
-                    _shutil.rmtree(scratch_dir, ignore_errors=True)
-
-        emit_progress(task_id, 100, "完了", "separation")
-        result = {
-            "status": "success",
-            "messages": messages,
-            "output_vocal": save_root_vocal,
-            "output_accompaniment": save_root_ins,
-        }
-        if polished_dir:
-            result["polished_dir"] = polished_dir
+        result = _run_in_subprocess(
+            _uvr5_worker,
+            (model_name, inp_root, save_root_vocal, input_paths,
+             save_root_ins, agg, fmt, polish_model),
+            cancel_event=task.cancel_event,
+            task_id=task_id,
+        )
+        if result.get("status") == "success":
+            emit_progress(task_id, 100, "完了", "separation")
         return result
     finally:
         _unregister_task(task_id)

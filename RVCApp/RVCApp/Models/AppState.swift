@@ -11,7 +11,11 @@ final class AppState: ObservableObject {
     /// Launch the Python backend using the paths the .app bundle provides,
     /// falling back to dev-tree paths so the Swift app is runnable from Xcode
     /// without a full bundle build.
+    private var didBootstrap = false
+
     func bootstrap(bridge: PythonBridge) async {
+        guard !didBootstrap else { return }
+        didBootstrap = true
         isLaunching = true
         defer { isLaunching = false }
 
@@ -62,7 +66,7 @@ final class AppState: ObservableObject {
         let fm = FileManager.default
         var dir = URL(fileURLWithPath: CommandLine.arguments[0])
             .deletingLastPathComponent()
-        for _ in 0..<8 {
+        for _ in 0..<12 {
             let candidate = dir.appendingPathComponent("rpc_server.py")
             if fm.fileExists(atPath: candidate.path) {
                 return (resolveDevPython(), candidate.path, dir.path)
@@ -120,7 +124,7 @@ final class AppState: ObservableObject {
             for: .documentDirectory, in: .userDomainMask
         ).first
         let root = docs ?? URL(fileURLWithPath: NSHomeDirectory())
-        return root.appendingPathComponent("RVC-WebUI").path
+        return root.appendingPathComponent("RVC-Swift").path
     }
 
     private func ensureUserDir(_ path: String) throws {

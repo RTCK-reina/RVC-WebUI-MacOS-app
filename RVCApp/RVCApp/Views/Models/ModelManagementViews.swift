@@ -4,8 +4,8 @@ import SwiftUI
 
 struct ModelCompareView: View {
     @EnvironmentObject var bridge: PythonBridge
-    @State private var idA = ""
-    @State private var idB = ""
+    @AppStorage("compare.idA") private var idA = ""
+    @AppStorage("compare.idB") private var idB = ""
     @State private var result: String?
     @State private var error: String?
 
@@ -49,14 +49,14 @@ struct ModelCompareView: View {
 
 struct ModelMergeView: View {
     @EnvironmentObject var bridge: PythonBridge
-    @State private var pathA = ""
-    @State private var pathB = ""
-    @State private var alpha: Double = 0.5
-    @State private var sr: Int = 40000
-    @State private var ifF0: Bool = true
-    @State private var name = ""
-    @State private var info = ""
-    @State private var version = "v2"
+    @AppStorage("merge.pathA") private var pathA = ""
+    @AppStorage("merge.pathB") private var pathB = ""
+    @AppStorage("merge.alpha") private var alpha: Double = 0.5
+    @AppStorage("merge.sr") private var sr: Int = 40000
+    @AppStorage("merge.ifF0") private var ifF0: Bool = true
+    @AppStorage("merge.name") private var name = ""
+    @AppStorage("merge.info") private var info = ""
+    @AppStorage("merge.version") private var version = "v2"
     @State private var resultMsg: String?
     @State private var errorMsg: String?
     @State private var taskID = ""
@@ -111,7 +111,10 @@ struct ModelMergeView: View {
         let id = "model_merge_\(Int(Date().timeIntervalSince1970 * 1000))"
         taskID = id
         isRunning = true
-        defer { isRunning = false }
+        defer {
+            isRunning = false
+            taskID = ""
+        }
         do {
             struct R: Decodable { let result: String? }
             let r: R = try await bridge.call("model_merge",
@@ -135,7 +138,7 @@ struct ModelMergeView: View {
 
 struct ModelInfoView: View {
     @EnvironmentObject var bridge: PythonBridge
-    @State private var path = ""
+    @AppStorage("modelinfo.path") private var path = ""
     @State private var info: String = ""
     @State private var errorMsg: String?
 
@@ -178,12 +181,12 @@ struct ModelInfoView: View {
 
 struct ModelExtractView: View {
     @EnvironmentObject var bridge: PythonBridge
-    @State private var ckpt = ""
-    @State private var name = ""
-    @State private var info = ""
-    @State private var sr: Int = 40000
-    @State private var ifF0 = true
-    @State private var version = "v2"
+    @AppStorage("extract.ckpt") private var ckpt = ""
+    @AppStorage("extract.name") private var name = ""
+    @AppStorage("extract.info") private var info = ""
+    @AppStorage("extract.sr") private var sr: Int = 40000
+    @AppStorage("extract.ifF0") private var ifF0 = true
+    @AppStorage("extract.version") private var version = "v2"
     @State private var msg: String?
     @State private var errorMsg: String?
     @State private var taskID = ""
@@ -225,7 +228,10 @@ struct ModelExtractView: View {
         let id = "model_extract_\(Int(Date().timeIntervalSince1970 * 1000))"
         taskID = id
         isRunning = true
-        defer { isRunning = false }
+        defer {
+            isRunning = false
+            taskID = ""
+        }
         do {
             struct R: Decodable { let result: String? }
             let r: R = try await bridge.call("model_extract",
@@ -247,8 +253,8 @@ struct ModelExtractView: View {
 
 struct OnnxExportView: View {
     @EnvironmentObject var bridge: PythonBridge
-    @State private var ckpt = ""
-    @State private var output = ""
+    @AppStorage("onnx.ckpt") private var ckpt = ""
+    @AppStorage("onnx.output") private var output = ""
     @State private var msg: String?
     @State private var errorMsg: String?
     @State private var taskID = ""
@@ -288,7 +294,10 @@ struct OnnxExportView: View {
         let id = "export_onnx_\(Int(Date().timeIntervalSince1970 * 1000))"
         taskID = id
         isRunning = true
-        defer { isRunning = false }
+        defer {
+            isRunning = false
+            taskID = ""
+        }
         do {
             struct R: Decodable {
                 let status: String

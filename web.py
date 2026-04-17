@@ -698,8 +698,8 @@ def change_info_(ckpt_path):
         return {"__type__": "update"}, {"__type__": "update"}, {"__type__": "update"}
 
 
-with gr.Blocks(title="RVC WebUI") as app:
-    gr.Markdown("## RVC WebUI")
+with gr.Blocks(title="RVC Swift") as app:
+    gr.Markdown("## RVC Swift")
     gr.Markdown(
         value=i18n(
             "This software is open source under the MIT license. The author does not have any control over the software. Users who use the software and distribute the sounds exported by the software are solely responsible. <br>If you do not agree with this clause, you cannot use or reference any codes and files within the software package. See the root directory <b>Agreement-LICENSE.txt</b> for details."

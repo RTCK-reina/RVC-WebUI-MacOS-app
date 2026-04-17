@@ -19,20 +19,20 @@ struct RealtimeVCView: View {
 
     // Device / model
     @State private var devices: AudioDeviceListing = .init(host_apis: [], input: [], output: [])
-    @State private var selectedModel: String = ""
-    @State private var indexPath: String = ""
-    @State private var inputDeviceIndex: Int? = nil
-    @State private var outputDeviceIndex: Int? = nil
-    @State private var sampleRate: Double = 48000
+    @AppStorage("rt.selectedModel") private var selectedModel: String = ""
+    @AppStorage("rt.indexPath") private var indexPath: String = ""
+    @AppStorage("rt.inputDeviceIndex") private var inputDeviceIndex: Int = -1
+    @AppStorage("rt.outputDeviceIndex") private var outputDeviceIndex: Int = -1
+    @AppStorage("rt.sampleRate") private var sampleRate: Double = 48000
 
     // Parameters (hot-reloadable)
-    @State private var pitch: Double = 0
-    @State private var formant: Double = 0
-    @State private var indexRate: Double = 0.0
-    @State private var threshold: Double = -60
-    @State private var blockTime: Double = 0.25
-    @State private var f0Method: String = "fcpe"
-    @State private var protect: Double = 0.33
+    @AppStorage("rt.pitch") private var pitch: Double = 0
+    @AppStorage("rt.formant") private var formant: Double = 0
+    @AppStorage("rt.indexRate") private var indexRate: Double = 0.0
+    @AppStorage("rt.threshold") private var threshold: Double = -60
+    @AppStorage("rt.blockTime") private var blockTime: Double = 0.25
+    @AppStorage("rt.f0Method") private var f0Method: String = "fcpe"
+    @AppStorage("rt.protect") private var protect: Double = 0.33
 
     // State
     @State private var isRunning = false
@@ -103,10 +103,10 @@ struct RealtimeVCView: View {
                 HStack {
                     Text("入力").frame(width: 100, alignment: .leading)
                     Picker("", selection: $inputDeviceIndex) {
-                        Text("自動").tag(Int?.none)
+                        Text("自動").tag(-1)
                         ForEach(devices.input, id: \.index) { d in
                             Text("\(d.name) [\(d.hostapi)]")
-                                .tag(Int?.some(d.index))
+                                .tag(d.index)
                         }
                     }
                     .labelsHidden()
@@ -114,10 +114,10 @@ struct RealtimeVCView: View {
                 HStack {
                     Text("出力").frame(width: 100, alignment: .leading)
                     Picker("", selection: $outputDeviceIndex) {
-                        Text("自動").tag(Int?.none)
+                        Text("自動").tag(-1)
                         ForEach(devices.output, id: \.index) { d in
                             Text("\(d.name) [\(d.hostapi)]")
-                                .tag(Int?.some(d.index))
+                                .tag(d.index)
                         }
                     }
                     .labelsHidden()
@@ -232,8 +232,8 @@ struct RealtimeVCView: View {
             "f0_method": .string(f0Method),
             "protect": .number(protect),
         ]
-        if let i = inputDeviceIndex { params["input_device"] = .number(Double(i)) }
-        if let o = outputDeviceIndex { params["output_device"] = .number(Double(o)) }
+        if inputDeviceIndex >= 0 { params["input_device"] = .number(Double(inputDeviceIndex)) }
+        if outputDeviceIndex >= 0 { params["output_device"] = .number(Double(outputDeviceIndex)) }
 
         do {
             struct R: Decodable {

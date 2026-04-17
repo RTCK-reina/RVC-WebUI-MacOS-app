@@ -27,10 +27,26 @@ struct ContentView: View {
 
                 if !bridge.activeProgress.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("進行中タスク")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ActiveTasksList()
+                        HStack {
+                            Text("進行中タスク (\(bridge.activeProgress.count))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    bridge.taskListMinimized.toggle()
+                                }
+                            } label: {
+                                Image(systemName: bridge.taskListMinimized
+                                      ? "chevron.up" : "chevron.down")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                            .help(bridge.taskListMinimized ? "展開" : "最小化")
+                        }
+                        if !bridge.taskListMinimized {
+                            ActiveTasksList()
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
@@ -98,7 +114,7 @@ private struct LaunchErrorOverlay: View {
 
     private var logFileURL: URL? {
         FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Logs/RVC-WebUI/bridge.log")
+            .appendingPathComponent("Logs/RVC-Swift/bridge.log")
     }
 
     var body: some View {

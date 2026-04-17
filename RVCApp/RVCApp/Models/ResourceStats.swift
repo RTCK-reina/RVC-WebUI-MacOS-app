@@ -18,7 +18,9 @@ struct ResourceStats: Equatable {
 
     // GPU / accelerator.
     var gpuMemoryUsedMB: Int = 0
+    var gpuMemoryTotalMB: Int = 0
     var gpuMemoryReservedOrDriverMB: Int = 0
+    var gpuPercent: Double = 0
 
     static let idle = ResourceStats()
 
@@ -41,10 +43,12 @@ struct ResourceStats: Equatable {
         self.processMemoryGB = json["process_memory_gb"]?.doubleValue ?? 0
 
         self.gpuMemoryUsedMB = json["gpu_memory_used_mb"]?.intValue ?? 0
+        self.gpuMemoryTotalMB = json["gpu_memory_total_mb"]?.intValue ?? 0
         self.gpuMemoryReservedOrDriverMB =
             json["gpu_memory_reserved_mb"]?.intValue
             ?? json["gpu_memory_driver_mb"]?.intValue
             ?? 0
+        self.gpuPercent = json["gpu_percent"]?.doubleValue ?? 0
     }
 
     /// Human friendly label for the device row in the status bar.

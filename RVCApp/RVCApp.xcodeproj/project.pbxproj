@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		03C9C61765D448674196E32E /* TrainingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0D5BFA2A4869A13A49887D1 /* TrainingView.swift */; };
+		04F970638674136E4529E5FC /* AppNotification.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62F003768F7DBB0791584740 /* AppNotification.swift */; };
 		1117B7784F8BDED84F8D8457 /* BatchInferenceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 194ED43F08E7547E95A3C320 /* BatchInferenceView.swift */; };
 		234519F80077D8D152B4E5C6 /* TaskProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3FC1385F99E7AEB33F617F /* TaskProgress.swift */; };
 		2A5A9050EC560DC73ACD7959 /* RealtimeVCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41752C4D63E4AA1801F684F4 /* RealtimeVCView.swift */; };
@@ -36,6 +37,7 @@
 		41752C4D63E4AA1801F684F4 /* RealtimeVCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVCView.swift; sourceTree = "<group>"; };
 		5634D8BD2D551688EFFC22DC /* SeparationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeparationView.swift; sourceTree = "<group>"; };
 		614864FDD09566BD41146B79 /* FilePickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePickerField.swift; sourceTree = "<group>"; };
+		62F003768F7DBB0791584740 /* AppNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNotification.swift; sourceTree = "<group>"; };
 		6A760FD509DD6FF4294F769F /* RVCApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RVCApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		85B2801DCF94E3DF8293C83A /* ResourceStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceStats.swift; sourceTree = "<group>"; };
 		8DCAFCB1E2BBF2A215B3C2EB /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
@@ -128,6 +130,7 @@
 		DFDFEC52EA14043ED739DBB4 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				62F003768F7DBB0791584740 /* AppNotification.swift */,
 				8DCAFCB1E2BBF2A215B3C2EB /* AppState.swift */,
 				D868D1FD6FF655167A4D3411 /* JSONRPCModels.swift */,
 				85B2801DCF94E3DF8293C83A /* ResourceStats.swift */,
@@ -218,6 +221,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				04F970638674136E4529E5FC /* AppNotification.swift in Sources */,
 				E71F4866D1B200EBDA757261 /* AppState.swift in Sources */,
 				6987F297E333C6E2133DE34D /* AudioPlayerView.swift in Sources */,
 				1117B7784F8BDED84F8D8457 /* BatchInferenceView.swift in Sources */,
@@ -277,6 +281,7 @@
 				CODE_SIGN_ENTITLEMENTS = RVCApp/RVCApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -292,14 +297,16 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				INFOPLIST_FILE = RVCApp/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = app.rvc.webui;
-				PRODUCT_NAME = "RVC-WebUI";
+				PRODUCT_NAME = "RVC Swift";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.9;
+				SYMROOT = "$(SRCROOT)/../build";
 			};
 			name = Release;
 		};
@@ -355,6 +362,7 @@
 				CODE_SIGN_ENTITLEMENTS = RVCApp/RVCApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -376,15 +384,17 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				INFOPLIST_FILE = RVCApp/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = app.rvc.webui;
-				PRODUCT_NAME = "RVC-WebUI";
+				PRODUCT_NAME = "RVC Swift";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.9;
+				SYMROOT = "$(SRCROOT)/../build";
 			};
 			name = Debug;
 		};

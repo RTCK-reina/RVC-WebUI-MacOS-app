@@ -69,21 +69,31 @@ def _spawn(cmd: list, cwd: str, log_path: Path) -> subprocess.Popen:
             cwd=cwd,
             stdout=log_f,
             stderr=subprocess.STDOUT,
+            # Create a new process group so we can kill the entire tree
+            # (train.py spawns mp.Process children that would otherwise
+            # survive a plain p.terminate()).
+            start_new_session=True,
         )
 
 
 def _terminate_procs(procs: list, graceful_wait: float = 3.0) -> None:
-    """Politely ask procs to exit, then SIGKILL any stragglers.
+    """Kill process groups so that child processes (e.g. mp.Process from
+    train.py) are also terminated.
 
-    Sends SIGTERM, waits up to `graceful_wait` seconds, then sends SIGKILL
-    to anything still running. Never raises.
+    Sends SIGTERM to each process group, waits up to `graceful_wait`
+    seconds, then sends SIGKILL to anything still running. Never raises.
     """
+    import signal as _signal
     alive = [p for p in procs if p is not None and p.poll() is None]
     for p in alive:
         try:
-            p.terminate()
-        except Exception:
-            pass
+            # Kill the entire process group (created via start_new_session).
+            os.killpg(os.getpgid(p.pid), _signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                p.terminate()
+            except Exception:
+                pass
     # Give them a chance to clean up.
     import time as _time
     deadline = _time.time() + graceful_wait
@@ -92,10 +102,19 @@ def _terminate_procs(procs: list, graceful_wait: float = 3.0) -> None:
         if not alive:
             return
         _time.sleep(0.1)
-    # Still alive: force kill.
+    # Still alive: force kill the group and wait for actual exit.
     for p in alive:
         try:
-            p.kill()
+            os.killpg(os.getpgid(p.pid), _signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                p.kill()
+            except Exception:
+                pass
+    # Wait for processes to actually exit after SIGKILL.
+    for p in alive:
+        try:
+            p.wait(timeout=2)
         except Exception:
             pass
 
@@ -147,7 +166,11 @@ def _tail_log_until_done(
             emit_progress(task_id, percent, last_tail or "running...", phase)
         except Exception as e:
             logger.warning("log tail error: %s", e)
-        time.sleep(1.0)
+        # Use Event.wait instead of sleep so cancel wakes us immediately.
+        if cancel_event is not None:
+            cancel_event.wait(1.0)
+        else:
+            time.sleep(1.0)
 
     # Final read.
     try:
@@ -338,6 +361,9 @@ def rpc_extract_f0(params: dict, ctx):
         procs = []
         leng = max(1, len(gpus_list) or 1)
         for idx, g in enumerate(gpus_list or ["0"]):
+            if task.cancel_event.is_set():
+                _terminate_procs(procs)
+                return {"status": "cancelled"}
             cmd = [
                 _bundle_python_cmd(config),
                 str(Path(base) / "infer" / "modules" / "train" / "extract_feature_print.py"),
@@ -692,9 +718,14 @@ def rpc_train_index(params: dict, ctx):
 
 def rpc_train_all(params: dict, ctx):
     """One-click training: preprocess -> extract_f0 -> train -> train_index."""
-    # Chain the existing handlers. They already emit their own progress.
     emit_progress = ctx["emit_progress"]
+    register_task = ctx["register_task"]
+    unregister_task = ctx["unregister_task"]
     task_id = params.get("task_id", f"train_all_{int(time.time()*1000)}")
+
+    # Register the parent task so _cancel_task(parent_id) can set its event.
+    # The prefix-match in _cancel_task also cascades to child stages.
+    parent_task = register_task(task_id)
 
     stages = [
         ("preprocess", rpc_preprocess),
@@ -703,26 +734,33 @@ def rpc_train_all(params: dict, ctx):
         ("train_index", rpc_train_index),
     ]
     results = {}
-    for name, fn in stages:
-        stage_params = dict(params)
-        stage_params["task_id"] = f"{task_id}_{name}"
-        emit_progress(task_id, (len(results) / len(stages)) * 100.0,
-                      f"stage: {name}", "pipeline")
-        r = fn(stage_params, ctx)
-        results[name] = r
-        # Propagate cancellation distinctly — the UI distinguishes cancelled
-        # from error and should not show "train_all failed" when the user hit
-        # the cancel button.
-        if r.get("status") == "cancelled":
-            return {
-                "status": "cancelled",
-                "cancelled_stage": name,
-                "results": results,
-            }
-        if r.get("status") != "success":
-            return {"status": "error", "failed_stage": name, "results": results}
-    emit_progress(task_id, 100.0, "all stages done", "pipeline")
-    return {"status": "success", "results": results}
+    try:
+        for name, fn in stages:
+            # Check parent cancel before launching next stage.
+            if parent_task.cancel_event.is_set():
+                return {
+                    "status": "cancelled",
+                    "cancelled_stage": name,
+                    "results": results,
+                }
+            stage_params = dict(params)
+            stage_params["task_id"] = f"{task_id}_{name}"
+            emit_progress(task_id, (len(results) / len(stages)) * 100.0,
+                          f"stage: {name}", "pipeline")
+            r = fn(stage_params, ctx)
+            results[name] = r
+            if r.get("status") == "cancelled":
+                return {
+                    "status": "cancelled",
+                    "cancelled_stage": name,
+                    "results": results,
+                }
+            if r.get("status") != "success":
+                return {"status": "error", "failed_stage": name, "results": results}
+        emit_progress(task_id, 100.0, "all stages done", "pipeline")
+        return {"status": "success", "results": results}
+    finally:
+        unregister_task(task_id)
 
 
 # ---------------------------------------------------------------------------

@@ -42,18 +42,18 @@ struct BatchInferenceView: View {
         }
     }
 
-    @State private var selectedModel: String = ""
-    @State private var dirPath: String = ""
-    @State private var paths: [String] = []
-    @State private var outputDir: String = ""
-    @State private var f0UpKey: Double = 0
-    @State private var f0Method: String = "rmvpe"
-    @State private var indexRate: Double = 0.75
-    @State private var filterRadius: Double = 3
-    @State private var rmsMixRate: Double = 0.25
-    @State private var protect: Double = 0.33
-    @State private var format: String = "flac"
-    @State private var preset: InferencePreset = .balanced
+    @AppStorage("batch.selectedModel") private var selectedModel: String = ""
+    @AppStorage("batch.dirPath") private var dirPath: String = ""
+    @State private var paths: [String] = []  // session-specific file list
+    @AppStorage("batch.outputDir") private var outputDir: String = ""
+    @AppStorage("batch.f0UpKey") private var f0UpKey: Double = 0
+    @AppStorage("batch.f0Method") private var f0Method: String = "rmvpe"
+    @AppStorage("batch.indexRate") private var indexRate: Double = 0.75
+    @AppStorage("batch.filterRadius") private var filterRadius: Double = 3
+    @AppStorage("batch.rmsMixRate") private var rmsMixRate: Double = 0.25
+    @AppStorage("batch.protect") private var protect: Double = 0.33
+    @AppStorage("batch.format") private var format: String = "flac"
+    @AppStorage("batch.preset") private var preset: InferencePreset = .balanced
 
     @State private var taskID = ""
     @State private var isRunning = false
@@ -225,7 +225,10 @@ struct BatchInferenceView: View {
         let id = "vc_multi_\(Int(Date().timeIntervalSince1970 * 1000))"
         taskID = id
         isRunning = true
-        defer { isRunning = false }
+        defer {
+            isRunning = false
+            taskID = ""
+        }
 
         do {
             _ = try await bridge.callRaw("load_model",
@@ -257,11 +260,21 @@ struct BatchInferenceView: View {
         do {
             let r: VCMultiResult = try await bridge.call("vc_multi", params: params, timeout: 7200)
             lastResult = r
-            if r.status != "success" {
+            if r.status == "success" {
+                AppNotification.send(
+                    title: "バッチ推論が完了しました",
+                    body: "全ファイルの推論が正常に終了しました。")
+            } else {
                 errorMessage = r.info ?? "バッチ推論に失敗しました"
+                AppNotification.send(
+                    title: "バッチ推論に失敗しました",
+                    body: errorMessage ?? "")
             }
         } catch {
             errorMessage = error.localizedDescription
+            AppNotification.send(
+                title: "バッチ推論に失敗しました",
+                body: error.localizedDescription)
         }
     }
 
@@ -270,6 +283,7 @@ struct BatchInferenceView: View {
         Task {
             _ = try? await bridge.callRaw("cancel",
                 params: .object(["task_id": .string(id)]))
+            bridge.clearProgress(for: id)
         }
     }
 
