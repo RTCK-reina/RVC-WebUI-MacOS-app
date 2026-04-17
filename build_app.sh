@@ -43,7 +43,7 @@ if [[ $SKIP_CONDA -eq 0 ]]; then
     echo "==> Packing conda environment '${CONDA_ENV_NAME}' with conda-pack"
     rm -rf "${PYTHON_BUNDLE}"
     mkdir -p "${PYTHON_BUNDLE}"
-    conda pack --ignore-editable-packages \
+    conda-pack --ignore-editable-packages \
                --ignore-missing-files \
                -n "${CONDA_ENV_NAME}" \
                -o "${BUILD_DIR}/rvc_env.tar.gz" \
@@ -51,7 +51,7 @@ if [[ $SKIP_CONDA -eq 0 ]]; then
                --n-threads 4
     tar -xzf "${BUILD_DIR}/rvc_env.tar.gz" -C "${PYTHON_BUNDLE}"
     # Fix absolute shebangs / RPATHs for the new location.
-    ( cd "${PYTHON_BUNDLE}" && bash bin/conda-unpack || true )
+    ( cd "${PYTHON_BUNDLE}" && ./bin/conda-unpack )
     rm "${BUILD_DIR}/rvc_env.tar.gz"
 fi
 
@@ -102,12 +102,13 @@ rsync -a --delete "${PYTHON_BUNDLE}/" "${RES_DIR}/python/"
 if [[ $SKIP_SIGN -eq 0 ]]; then
     IDENTITY="${CODE_SIGN_IDENTITY:--}"  # '-' = ad-hoc signing by default
     echo "==> Code signing all dylibs / sos with identity: ${IDENTITY}"
-    find "${RES_DIR}/python" \( -name "*.so" -o -name "*.dylib" \) -print0 \
-        | xargs -0 -n 1 codesign --force --sign "${IDENTITY}" \
-            --options runtime --timestamp=none 2>/dev/null || true
+    while IFS= read -r -d '' lib; do
+        codesign --force --sign "${IDENTITY}" \
+            --options runtime --timestamp=none "${lib}"
+    done < <(find "${RES_DIR}/python" \( -name "*.so" -o -name "*.dylib" \) -print0)
     codesign --force --deep --sign "${IDENTITY}" \
         --entitlements "${ROOT_DIR}/RVCApp/RVCApp/RVCApp.entitlements" \
-        --options runtime --timestamp=none "${APP_PATH}" || true
+        --options runtime --timestamp=none "${APP_PATH}"
 fi
 
 echo "==> Bundle ready: ${APP_PATH}"

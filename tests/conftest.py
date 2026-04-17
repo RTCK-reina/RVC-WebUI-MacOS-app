@@ -9,6 +9,7 @@ Python sources can be imported without the full RVC conda environment.
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 from unittest.mock import MagicMock
@@ -60,8 +61,19 @@ def _make_numba_stub() -> types.ModuleType:
 # ---------------------------------------------------------------------------
 # sys.modules へスタブを注入 (未インストールのもののみ)
 # ---------------------------------------------------------------------------
-def _stub(name: str, obj=None) -> None:
+def _is_importable(name: str) -> bool:
+    """Best-effort check whether the top-level package exists."""
+    root = name.split(".", 1)[0]
+    try:
+        return importlib.util.find_spec(root) is not None
+    except Exception:
+        return False
+
+
+def _stub(name: str, obj=None, *, force: bool = False) -> None:
     if name not in sys.modules:
+        if not force and _is_importable(name):
+            return
         sys.modules[name] = obj if obj is not None else MagicMock(name=name)
 
 
@@ -144,7 +156,7 @@ _INFER_LEAF_STUBS = [
     "rvc.f0",
 ]
 for _m in _INFER_LEAF_STUBS:
-    _stub(_m)
+    _stub(_m, force=True)
 
 # infer.modules.vc.modules — VC クラスを持つ特殊スタブ
 if "infer.modules.vc.modules" not in sys.modules:

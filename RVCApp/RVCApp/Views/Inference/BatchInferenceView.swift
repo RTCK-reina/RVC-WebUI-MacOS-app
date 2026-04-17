@@ -15,6 +15,33 @@ struct VCMultiResult: Decodable {
 struct BatchInferenceView: View {
     @EnvironmentObject var bridge: PythonBridge
 
+    private enum InferencePreset: String, CaseIterable, Identifiable {
+        case quality
+        case balanced
+        case speed
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .quality: return "高品質"
+            case .balanced: return "バランス"
+            case .speed: return "高速"
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .quality:
+                return "品質優先。補正量を高めて安定した声色再現を狙います。"
+            case .balanced:
+                return "標準運用向け。品質と処理時間のバランスを取ります。"
+            case .speed:
+                return "大量処理向け。軽量設定でスループットを優先します。"
+            }
+        }
+    }
+
     @State private var selectedModel: String = ""
     @State private var dirPath: String = ""
     @State private var paths: [String] = []
@@ -26,6 +53,7 @@ struct BatchInferenceView: View {
     @State private var rmsMixRate: Double = 0.25
     @State private var protect: Double = 0.33
     @State private var format: String = "flac"
+    @State private var preset: InferencePreset = .balanced
 
     @State private var taskID = ""
     @State private var isRunning = false
@@ -39,6 +67,7 @@ struct BatchInferenceView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                presetCard
                 GroupBox("モデル・入出力") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -141,6 +170,29 @@ struct BatchInferenceView: View {
         }
     }
 
+    private var presetCard: some View {
+        GroupBox("品質 / 速度プリセット") {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("目的", selection: $preset) {
+                    ForEach(InferencePreset.allCases) { p in
+                        Text(p.label).tag(p)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(preset.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button("推奨値を適用") {
+                    applyPreset()
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(8)
+        }
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("バッチ推論").font(.title2).bold()
@@ -218,6 +270,32 @@ struct BatchInferenceView: View {
         Task {
             _ = try? await bridge.callRaw("cancel",
                 params: .object(["task_id": .string(id)]))
+        }
+    }
+
+    private func applyPreset() {
+        switch preset {
+        case .quality:
+            f0Method = "rmvpe"
+            indexRate = 0.85
+            filterRadius = 5
+            rmsMixRate = 0.2
+            protect = 0.35
+            format = "flac"
+        case .balanced:
+            f0Method = "rmvpe"
+            indexRate = 0.75
+            filterRadius = 3
+            rmsMixRate = 0.25
+            protect = 0.33
+            format = "flac"
+        case .speed:
+            f0Method = "dio"
+            indexRate = 0.55
+            filterRadius = 1
+            rmsMixRate = 0.35
+            protect = 0.2
+            format = "wav"
         }
     }
 }

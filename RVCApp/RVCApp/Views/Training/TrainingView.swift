@@ -5,6 +5,33 @@ import SwiftUI
 struct TrainingView: View {
     @EnvironmentObject var bridge: PythonBridge
 
+    private enum TrainingPreset: String, CaseIterable, Identifiable {
+        case quality
+        case balanced
+        case speed
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .quality: return "高品質"
+            case .balanced: return "バランス"
+            case .speed: return "高速"
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .quality:
+                return "音質重視。F0 精度を優先し、保存頻度を上げて安定した学習経路を確保します。"
+            case .balanced:
+                return "日常運用向け。品質と速度のバランスが取れた無難な設定です。"
+            case .speed:
+                return "反復重視。高速に回して実験回数を増やすための設定です。"
+            }
+        }
+    }
+
     // Experiment config
     @State private var expName: String = ""
     @State private var author: String = ""
@@ -28,6 +55,7 @@ struct TrainingView: View {
     @State private var spkId: Double = 0
     @State private var pretrainedG: String = ""
     @State private var pretrainedD: String = ""
+    @State private var preset: TrainingPreset = .balanced
 
     // Runtime state
     @State private var currentTaskID: String = ""
@@ -39,6 +67,7 @@ struct TrainingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                presetCard
                 experimentCard
                 dataProcessingCard
                 trainingParamsCard
@@ -68,6 +97,35 @@ struct TrainingView: View {
             Text("トレーニング").font(.title2).bold()
             Text("実験名を決めて、データ前処理 → F0抽出 → 学習 → インデックス構築 の順に進めます。")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var presetCard: some View {
+        GroupBox("品質 / 速度プリセット") {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("目的", selection: $preset) {
+                    ForEach(TrainingPreset.allCases) { p in
+                        Text(p.label).tag(p)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(preset.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button("推奨値を適用") {
+                        applyTrainingPreset()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Text("現在デバイス: \(bridge.resourceStats.deviceLabel)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(8)
         }
     }
 
@@ -239,6 +297,42 @@ struct TrainingView: View {
 
     private func runPreprocess() async {
         await runStage(method: "preprocess", params: preprocessParams())
+    }
+
+    private func applyTrainingPreset() {
+        let cpuWorkers = min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
+        let gpuBackend = bridge.resourceStats.gpuBackend
+        let gpuEnabled = (gpuBackend == "mps" || gpuBackend == "cuda")
+
+        switch preset {
+        case .quality:
+            f0Method = "rmvpe"
+            nProcess = Double(min(cpuWorkers, 6))
+            saveEpoch = 5
+            totalEpoch = max(totalEpoch, 300)
+            batchSize = gpuEnabled ? 4 : 2
+            ifSaveLatest = false
+            ifCacheGpu = gpuEnabled
+            ifSaveEveryWeights = true
+        case .balanced:
+            f0Method = "rmvpe"
+            nProcess = Double(min(cpuWorkers, 6))
+            saveEpoch = 5
+            totalEpoch = max(200, min(totalEpoch, 400))
+            batchSize = gpuEnabled ? 4 : 2
+            ifSaveLatest = true
+            ifCacheGpu = false
+            ifSaveEveryWeights = true
+        case .speed:
+            f0Method = ifF0 ? "fcpe" : "pm"
+            nProcess = Double(cpuWorkers)
+            saveEpoch = 10
+            totalEpoch = min(totalEpoch, 180)
+            batchSize = gpuEnabled ? 8 : 3
+            ifSaveLatest = true
+            ifCacheGpu = gpuEnabled
+            ifSaveEveryWeights = false
+        }
     }
 
     private func runExtractF0() async {

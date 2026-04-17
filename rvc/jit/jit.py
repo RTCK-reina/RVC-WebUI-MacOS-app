@@ -6,9 +6,40 @@ import os
 import torch
 
 
+class _SafeJITUnpickler(pickle.Unpickler):
+    """Restrict globals allowed during JIT cache unpickling.
+
+    JIT cache files only need primitive containers plus OrderedDict metadata.
+    Denying arbitrary globals reduces code-execution risk from tampered cache
+    files while keeping backward compatibility with our own cache format.
+    """
+
+    _ALLOWED_GLOBALS = {
+        ("collections", "OrderedDict"): OrderedDict,
+    }
+
+    def find_class(self, module, name):
+        key = (module, name)
+        if key in self._ALLOWED_GLOBALS:
+            return self._ALLOWED_GLOBALS[key]
+        raise pickle.UnpicklingError(
+            f"disallowed global during JIT cache load: {module}.{name}"
+        )
+
+
 def load_pickle(path: str):
     with open(path, "rb") as f:
-        return pickle.load(f)
+        ckpt = _SafeJITUnpickler(f).load()
+
+    if not isinstance(ckpt, (dict, OrderedDict)):
+        raise ValueError("invalid JIT cache payload: expected mapping")
+    if "model" not in ckpt or not isinstance(ckpt["model"], (bytes, bytearray)):
+        raise ValueError("invalid JIT cache payload: missing model bytes")
+    if "is_half" in ckpt and not isinstance(ckpt["is_half"], bool):
+        raise ValueError("invalid JIT cache payload: is_half must be bool")
+    if "device" in ckpt and not isinstance(ckpt["device"], str):
+        raise ValueError("invalid JIT cache payload: device must be string")
+    return ckpt
 
 
 def save_pickle(ckpt: dict, save_path: str):

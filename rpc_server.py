@@ -777,12 +777,22 @@ def rpc_model_merge(params: dict) -> dict:
 
 def rpc_model_extract(params: dict) -> dict:
     task_id = params.get("task_id", f"model_extract_{int(time.time()*1000)}")
+    # extract_small_model expects sr as a string key ("40k" / "48k" / "32k")
+    # because it indexes into hard-coded config tables keyed by that string.
+    # Accept either int (Hz) or already-formatted string from the caller.
+    raw_sr = params.get("sr", "40k")
+    if isinstance(raw_sr, str):
+        sr_key = raw_sr
+    else:
+        _sr_map = {40000: "40k", 48000: "48k", 32000: "32k"}
+        sr_key = _sr_map.get(int(raw_sr), "40k")
     return _run_with_progress(
         task_id, "extract",
         extract_small_model,
         params["ckpt_path"],
         params.get("name", ""),
-        int(params.get("sr", 40000)),
+        params.get("author", ""),
+        sr_key,
         int(params.get("if_f0", 1)),
         params.get("info", ""),
         params.get("version", "v2"),

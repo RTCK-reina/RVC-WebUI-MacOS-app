@@ -255,7 +255,9 @@ final class PythonBridge: ObservableObject {
                 try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 throw PythonBridgeError.timeout
             }
-            let result = try await group.next()!
+            guard let result = try await group.next() else {
+                throw PythonBridgeError.invalidResponse("No response task produced a value")
+            }
             group.cancelAll()
             return result
         }

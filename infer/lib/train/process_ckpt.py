@@ -93,7 +93,13 @@ def extract_small_model(path, name, author, sr, if_f0, info, version):
     try:
         ckpt = torch.load(path, map_location="cpu")
         if "model" in ckpt:
+            # Raw training checkpoint (G_xxx.pth): unwrap to state_dict
             ckpt = ckpt["model"]
+        elif isinstance(ckpt.get("weight"), dict) and all(
+            hasattr(v, "half") for v in ckpt["weight"].values()
+        ):
+            # Already-extracted inference checkpoint — treat ckpt["weight"] as the state_dict
+            ckpt = ckpt["weight"]
         opt = OrderedDict()
         opt["weight"] = {}
         for key in ckpt.keys():

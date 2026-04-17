@@ -17,3 +17,7 @@ xcuserdata
 /build/
 /TEMP_DL/
 /.rpc_test_user/
+
+# Claude Code
+.claude/
+BUILD_VERIFICATION_REPORT.md

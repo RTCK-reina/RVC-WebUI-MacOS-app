@@ -24,7 +24,12 @@ audio_format_dict: Dict[str, str] = {
 
 @jit(nopython=True)
 def float_to_int16(audio: np.ndarray) -> np.ndarray:
-    am = int(math.ceil(float(np.abs(audio).max())) * 32768)
+    peak = float(np.abs(audio).max())
+    if peak <= 0.0:
+        return np.zeros_like(audio, dtype=np.int16)
+    am = int(math.ceil(peak * 32768))
+    if am <= 0:
+        return np.zeros_like(audio, dtype=np.int16)
     am = 32767 * 32768 // am
     return np.multiply(audio, am).astype(np.int16)
 
@@ -38,7 +43,8 @@ def float_np_array_to_wav_buf(wav: np.ndarray, sr: int, f32=False) -> BytesIO:
             wf.setnchannels(2 if len(wav.shape) > 1 else 1)
             wf.setsampwidth(2)  # Sample width in bytes
             wf.setframerate(sr)  # Sample rate in Hz
-            wf.writeframes(float_to_int16(wav.T if len(wav.shape) > 1 else wav))
+            pcm = float_to_int16(wav.T if len(wav.shape) > 1 else wav)
+            wf.writeframes(np.ascontiguousarray(pcm).tobytes())
     buf.seek(0, 0)
     return buf
 

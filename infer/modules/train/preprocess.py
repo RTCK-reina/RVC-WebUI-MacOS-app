@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import sys
+import atexit
 
 from scipy import signal
 
@@ -22,6 +23,7 @@ from infer.lib.audio import load_audio, float_np_array_to_wav_buf, save_audio
 from infer.lib.slicer2 import Slicer
 
 f = open("%s/preprocess.log" % exp_dir, "a+")
+atexit.register(f.close)
 
 
 def println(strr):

@@ -25,31 +25,9 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # numpy / av が実際にインストールされているかチェック
-# conftest.py がこれらを MagicMock でスタブ化している場合もスキップする。
 # ---------------------------------------------------------------------------
-
-def _is_real_module(name: str, probe_attr: str) -> bool:
-    """sys.modules[name] が実モジュールであり MagicMock スタブでないことを確認する。"""
-    mod = sys.modules.get(name)
-    if mod is None:
-        return False
-    # MagicMock は任意の属性アクセスを返すが、isinstance で区別できる
-    try:
-        from unittest.mock import MagicMock
-        if isinstance(mod, MagicMock):
-            return False
-    except ImportError:
-        pass
-    return hasattr(mod, probe_attr)
-
-
-if not _is_real_module("numpy", "ndarray"):
-    pytest.skip("numpy が必要（未インストールまたはスタブ）", allow_module_level=True)
-
-if not _is_real_module("av", "open"):
-    pytest.skip("PyAV (av) が必要（未インストールまたはスタブ）", allow_module_level=True)
-
-import numpy as np  # noqa: E402 — skip guard 済み
+np = pytest.importorskip("numpy", reason="numpy が必要")
+_av = pytest.importorskip("av", reason="PyAV (av) が必要")
 
 # numpy が使えるなら audio モジュールも試みる
 _repo_root = str(Path(__file__).resolve().parent.parent)

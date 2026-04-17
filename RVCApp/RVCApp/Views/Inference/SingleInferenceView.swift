@@ -11,6 +11,33 @@ struct VCSingleResult: Decodable {
 struct SingleInferenceView: View {
     @EnvironmentObject var bridge: PythonBridge
 
+    private enum InferencePreset: String, CaseIterable, Identifiable {
+        case quality
+        case balanced
+        case speed
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .quality: return "高品質"
+            case .balanced: return "バランス"
+            case .speed: return "高速"
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .quality:
+                return "rmvpe と高めの index_rate で音質を優先します。"
+            case .balanced:
+                return "既定値ベース。品質と速度の両立向けです。"
+            case .speed:
+                return "軽い F0 推定と低めの補正量で処理速度を優先します。"
+            }
+        }
+    }
+
     @State private var selectedModel: String = ""
     @State private var inputPath: String = ""
     @State private var f0UpKey: Double = 0
@@ -21,6 +48,7 @@ struct SingleInferenceView: View {
     @State private var protect: Double = 0.33
     @State private var resampleSR: Double = 0
     @State private var format: String = "flac"
+    @State private var preset: InferencePreset = .balanced
 
     @State private var taskID: String = ""
     @State private var lastResult: VCSingleResult?
@@ -34,6 +62,7 @@ struct SingleInferenceView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                presetCard
                 modelCard
                 parametersCard
                 actionCard
@@ -95,6 +124,29 @@ struct SingleInferenceView: View {
                     .frame(width: 180)
                     Spacer()
                 }
+            }
+            .padding(8)
+        }
+    }
+
+    private var presetCard: some View {
+        GroupBox("品質 / 速度プリセット") {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("目的", selection: $preset) {
+                    ForEach(InferencePreset.allCases) { p in
+                        Text(p.label).tag(p)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(preset.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button("推奨値を適用") {
+                    applyPreset()
+                }
+                .buttonStyle(.bordered)
             }
             .padding(8)
         }
@@ -229,6 +281,35 @@ struct SingleInferenceView: View {
             }
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func applyPreset() {
+        switch preset {
+        case .quality:
+            f0Method = "rmvpe"
+            indexRate = 0.85
+            filterRadius = 5
+            rmsMixRate = 0.2
+            protect = 0.35
+            resampleSR = 0
+            format = "flac"
+        case .balanced:
+            f0Method = "rmvpe"
+            indexRate = 0.75
+            filterRadius = 3
+            rmsMixRate = 0.25
+            protect = 0.33
+            resampleSR = 0
+            format = "flac"
+        case .speed:
+            f0Method = "dio"
+            indexRate = 0.55
+            filterRadius = 1
+            rmsMixRate = 0.35
+            protect = 0.2
+            resampleSR = 32000
+            format = "wav"
         }
     }
 
