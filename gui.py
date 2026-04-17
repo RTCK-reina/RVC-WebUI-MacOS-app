@@ -77,6 +77,7 @@ if __name__ == "__main__":
     import multiprocessing
     import re
     import time
+    import traceback
     from multiprocessing import Queue, cpu_count
 
     import librosa
@@ -896,6 +897,15 @@ if __name__ == "__main__":
         def audio_callback(
             self, indata: np.ndarray, outdata: np.ndarray, frames, times, status
         ):
+            try:
+                self._audio_callback_impl(indata, outdata, frames, times, status)
+            except Exception:
+                printt("audio_callback error:\n%s", traceback.format_exc())
+                outdata.fill(0)
+
+        def _audio_callback_impl(
+            self, indata: np.ndarray, outdata: np.ndarray, frames, times, status
+        ):
             """
             音频处理
             """
@@ -1021,11 +1031,7 @@ if __name__ == "__main__":
                 )
                 + 1e-8
             )
-            if sys.platform == "darwin":
-                _, sola_offset = torch.max(cor_nom[0, 0] / cor_den[0, 0])
-                sola_offset = sola_offset.item()
-            else:
-                sola_offset = torch.argmax(cor_nom[0, 0] / cor_den[0, 0])
+            sola_offset = torch.argmax(cor_nom[0, 0] / cor_den[0, 0]).item()
             # printt("sola_offset = %d", int(sola_offset))
             infer_wav = infer_wav[sola_offset:]
             if "privateuseone" in str(self.config.device) or not self.gui_config.use_pv:
