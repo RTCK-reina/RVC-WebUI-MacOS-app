@@ -27,6 +27,8 @@ import gradio as gr
 import faiss
 import pathlib
 import json
+import ast
+import shlex
 from time import sleep
 from subprocess import Popen
 from random import shuffle
@@ -170,20 +172,21 @@ def preprocess_dataset(trainset_dir, exp_dir, sr, n_p):
     exp_path = pathlib.Path(now_dir, "logs", exp_dir)
     os.makedirs(exp_path, exist_ok=True)
     log_file_path = exp_path / "preprocess.log"
-    f = open(log_file_path, "w")
-    f.close()
-    cmd = '"%s" infer/modules/train/preprocess.py "%s" %s %s "%s" %s %.1f' % (
+    with open(log_file_path, "w"):
+        pass
+    cmd = [
         config.python_cmd,
-        trainset_dir,
-        sr,
-        n_p,
+        "infer/modules/train/preprocess.py",
+        str(trainset_dir),
+        str(sr),
+        str(n_p),
         str(exp_path),
-        config.noparallel,
-        config.preprocess_per,
-    )
-    logger.info("Execute: " + cmd)
+        str(config.noparallel),
+        f"{config.preprocess_per:.1f}",
+    ]
+    logger.info("Execute: %s", " ".join(shlex.quote(str(a)) for a in cmd))
     # , stdin=PIPE, stdout=PIPE,stderr=PIPE,cwd=now_dir
-    p = Popen(cmd, shell=True)
+    p = Popen(cmd, cwd=now_dir)
     # 煞笔gr, popen read都非得全跑完了再一次性读取, 不用gr就正常读一句输出一句;只能额外弄出一个文本流定时读
     done = [False]
     threading.Thread(
@@ -212,22 +215,17 @@ def extract_f0_feature(n_p, f0method, if_f0, exp_dir, version19):
     f.close()
     if if_f0:
         if f0method != "rmvpe_gpu":
-            cmd = (
-                '"%s" infer/modules/train/extract_f0_print.py "%s/logs/%s" %s %s "%s" %s'
-                % (
-                    config.python_cmd,
-                    now_dir,
-                    exp_dir,
-                    n_p,
-                    f0method,
-                    config.device,
-                    str(config.is_half),
-                )
-            )
-            logger.info("Execute: " + cmd)
-            p = Popen(
-                cmd, shell=True, cwd=now_dir
-            )  # , stdin=PIPE, stdout=PIPE,stderr=PIPE
+            cmd = [
+                config.python_cmd,
+                "infer/modules/train/extract_f0_print.py",
+                f"{now_dir}/logs/{exp_dir}",
+                str(n_p),
+                str(f0method),
+                str(config.device),
+                str(config.is_half),
+            ]
+            logger.info("Execute: %s", " ".join(shlex.quote(str(a)) for a in cmd))
+            p = Popen(cmd, cwd=now_dir)  # , stdin=PIPE, stdout=PIPE,stderr=PIPE
             done = [False]
             threading.Thread(
                 target=if_done,
@@ -259,24 +257,19 @@ def extract_f0_feature(n_p, f0method, if_f0, exp_dir, version19):
     leng = len(gpus)
     ps = []
     for idx, n_g in enumerate(gpus):
-        cmd = (
-            '"%s" infer/modules/train/extract_feature_print.py %s %s %s %s "%s/logs/%s" %s %s'
-            % (
-                config.python_cmd,
-                config.device,
-                leng,
-                idx,
-                n_g,
-                now_dir,
-                exp_dir,
-                version19,
-                config.is_half,
-            )
-        )
-        logger.info("Execute: " + cmd)
-        p = Popen(
-            cmd, shell=True, cwd=now_dir
-        )  # , shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, cwd=now_dir
+        cmd = [
+            config.python_cmd,
+            "infer/modules/train/extract_feature_print.py",
+            str(config.device),
+            str(leng),
+            str(idx),
+            str(n_g),
+            f"{now_dir}/logs/{exp_dir}",
+            str(version19),
+            str(config.is_half),
+        ]
+        logger.info("Execute: %s", " ".join(shlex.quote(str(a)) for a in cmd))
+        p = Popen(cmd, cwd=now_dir)  # stdin=PIPE, stdout=PIPE, stderr=PIPE, cwd=now_dir
         ps.append(p)
     # 煞笔gr, popen read都非得全跑完了再一次性读取, 不用gr就正常读一句输出一句;只能额外弄出一个文本流定时读
     done = [False]
@@ -469,30 +462,41 @@ def click_train(
                 sort_keys=True,
             )
             f.write("\n")
-    cmd = (
-        '"%s" infer/modules/train/train.py -e "%s" -sr %s -f0 %s -bs %s -te %s -se %s %s %s -l %s -c %s -sw %s -v %s -a "%s"'
-        % (
-            config.python_cmd,
-            exp_dir1,
-            sr2,
-            1 if if_f0_3 else 0,
-            batch_size12,
-            total_epoch11,
-            save_epoch10,
-            '-pg "%s"' % pretrained_G14 if pretrained_G14 != "" else "",
-            '-pd "%s"' % pretrained_D15 if pretrained_D15 != "" else "",
-            1 if if_save_latest13 == i18n("Yes") else 0,
-            1 if if_cache_gpu17 == i18n("Yes") else 0,
-            1 if if_save_every_weights18 == i18n("Yes") else 0,
-            version19,
-            author,
-        )
-    )
+    cmd = [
+        config.python_cmd,
+        "infer/modules/train/train.py",
+        "-e",
+        str(exp_dir1),
+        "-sr",
+        str(sr2),
+        "-f0",
+        "1" if if_f0_3 else "0",
+        "-bs",
+        str(batch_size12),
+        "-te",
+        str(total_epoch11),
+        "-se",
+        str(save_epoch10),
+        "-l",
+        str(1 if if_save_latest13 == i18n("Yes") else 0),
+        "-c",
+        str(1 if if_cache_gpu17 == i18n("Yes") else 0),
+        "-sw",
+        str(1 if if_save_every_weights18 == i18n("Yes") else 0),
+        "-v",
+        str(version19),
+        "-a",
+        str(author),
+    ]
+    if pretrained_G14:
+        cmd.extend(["-pg", str(pretrained_G14)])
+    if pretrained_D15:
+        cmd.extend(["-pd", str(pretrained_D15)])
     if gpus16:
-        cmd += ' -g "%s"' % (gpus16)
+        cmd.extend(["-g", str(gpus16)])
 
-    logger.info("Execute: " + cmd)
-    p = Popen(cmd, shell=True, cwd=now_dir)
+    logger.info("Execute: %s", " ".join(shlex.quote(str(a)) for a in cmd))
+    p = Popen(cmd, cwd=now_dir)
     p.wait()
     return "Training complete. You can check the training logs in the console or the 'train.log' file under the experiment folder."
 
@@ -682,7 +686,10 @@ def change_info_(ckpt_path):
         with open(
             ckpt_path.replace(os.path.basename(ckpt_path), "train.log"), "r"
         ) as f:
-            info = eval(f.read().strip("\n").split("\n")[0].split("\t")[-1])
+            line = f.read().strip("\n").split("\n")[0]
+            info = ast.literal_eval(line.split("\t")[-1])
+            if not isinstance(info, dict):
+                raise ValueError("train.log payload is not a dict")
             sr, f0 = info["sample_rate"], info["if_f0"]
             version = "v2" if ("version" in info and info["version"] == "v2") else "v1"
             return sr, str(f0), version

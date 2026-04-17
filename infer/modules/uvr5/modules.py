@@ -120,7 +120,7 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
             preproc_results = list(pool.map(_preprocess_file, abs_paths))
 
         # モデル推論（シリアル）
-        for inp_path, _was_reformatted in preproc_results:
+        for inp_path, was_reformatted in preproc_results:
             try:
                 pre_fun._path_audio_(
                     inp_path, save_root_ins, save_root_vocal, format0
@@ -132,6 +132,14 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                     "%s->%s" % (os.path.basename(inp_path), traceback.format_exc())
                 )
                 yield "\n".join(infos)
+            finally:
+                if was_reformatted and os.path.exists(inp_path):
+                    try:
+                        os.remove(inp_path)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to remove temporary file %s: %s", inp_path, e
+                        )
     except:
         infos.append(traceback.format_exc())
         yield "\n".join(infos)

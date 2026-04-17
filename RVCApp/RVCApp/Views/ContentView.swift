@@ -25,6 +25,19 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+                if !bridge.activeProgress.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("進行中タスク")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ActiveTasksList()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 6)
+                    .background(.ultraThinMaterial)
+                }
+
                 Divider()
                 StatusBarView()
             }

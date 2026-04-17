@@ -1,6 +1,7 @@
 import os
 import sys
 import traceback
+import atexit
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,6 +26,7 @@ from multiprocessing import Process
 
 exp_dir = sys.argv[1]
 f = open("%s/extract_f0_feature.log" % exp_dir, "a+")
+atexit.register(f.close)
 
 
 def printt(strr):

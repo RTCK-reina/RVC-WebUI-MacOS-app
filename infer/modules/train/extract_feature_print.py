@@ -1,6 +1,7 @@
 import os
 import sys
 import traceback
+import atexit
 
 now_dir = os.getcwd()
 sys.path.append(now_dir)
@@ -50,6 +51,7 @@ else:
     fairseq.modules.grad_multiply.GradMultiply.forward = forward_dml
 
 f = open("%s/extract_f0_feature.log" % exp_dir, "a+")
+atexit.register(f.close)
 
 
 def printt(strr):

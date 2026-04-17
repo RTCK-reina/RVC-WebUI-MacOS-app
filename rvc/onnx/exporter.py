@@ -48,5 +48,6 @@ def export_onnx(from_cpkt_pth: str, to_onnx_pth: str) -> str:
         verbose=False,
         input_names=input_names,
         output_names=output_names,
+        dynamo=False,  # legacy TorchScript exporter — dynamo path rejects dynamic_axes in torch>=2.6
     )
     return "Finished"

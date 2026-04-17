@@ -27,6 +27,7 @@ colorama>=0.4.5
 pyworld==0.3.2
 onnxruntime; sys_platform == 'darwin'
 onnxruntime-gpu; sys_platform != 'darwin'
+onnxscript>=0.1.0
 torchcrepe>=0.0.23
 torchfcpe
 python-dotenv>=1.0.0
