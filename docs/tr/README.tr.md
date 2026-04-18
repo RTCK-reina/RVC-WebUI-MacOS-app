@@ -63,7 +63,8 @@ Intel Mac'ler **desteklenmez** — paketlenmiş PyTorch yalnızca ARM64'tür.
 
 ```bash
 # Ön koşullar: Homebrew, Xcode CLT, Miniforge/conda
-brew install xcodegen conda-pack
+brew install xcodegen
+conda install -n base -c conda-forge conda-pack
 
 # 1. Klonla
 git clone https://github.com/RTCKPRO/RVC-WebUI-MacOS.git
@@ -77,7 +78,10 @@ conda activate rvc
 python tools/test_rpc.py
 # beklenen: "ready" bildirimi → initialize yanıtı → her saniye resource_stats
 
-# 4. Tam .app paketini derle
+# 4. HuggingFace üzerinden model varlıklarını indir (hubert / rmvpe / pretrained_v2 / uvr5_weights, yaklaşık 2 GB)
+./tools/download_assets.sh --all
+
+# 5. Tam .app paketini derle
 ./build_app.sh
 # Üretilen: build/RVC-WebUI.app  (PyTorch ve tüm modeller dahil yaklaşık 4 GB)
 ```

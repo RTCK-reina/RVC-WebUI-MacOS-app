@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build the standalone RVC Swift.app bundle.
 #
-# Requirements (installed via Homebrew):
-#   brew install xcodegen conda-pack
-#   (and a working conda / miniforge installation with an `rvc` env)
+# Requirements:
+#   brew install xcodegen
+#   conda install -n base -c conda-forge conda-pack
+#   (plus a working conda / miniforge installation with an `rvc` env)
 #
 # Usage:
 #   ./build_app.sh [--skip-conda] [--skip-xcode] [--skip-sign]
@@ -77,6 +78,27 @@ fi
 # ---------------------------------------------------------------------------
 # Step 3: Copy Python backend + assets into the bundle.
 # ---------------------------------------------------------------------------
+# Pre-flight: required model weights must already be downloaded.
+# Running the app without these produces "Model file not found" errors at
+# inference / realtime VC time.
+REQUIRED_ASSETS=(
+    "assets/hubert/hubert_base.pt"
+    "assets/rmvpe/rmvpe.pt"
+)
+MISSING_ASSETS=()
+for asset in "${REQUIRED_ASSETS[@]}"; do
+    asset_path="${ROOT_DIR}/${asset}"
+    if [[ ! -s "${asset_path}" ]] || [[ $(stat -f%z "${asset_path}" 2>/dev/null || stat -c%s "${asset_path}") -lt 10000 ]]; then
+        MISSING_ASSETS+=("${asset}")
+    fi
+done
+if (( ${#MISSING_ASSETS[@]} > 0 )); then
+    echo "==> ERROR: required model assets are missing or empty:" >&2
+    for asset in "${MISSING_ASSETS[@]}"; do echo "      ${asset}" >&2; done
+    echo "==> Run ./tools/download_assets.sh --all first, then re-run this script." >&2
+    exit 1
+fi
+
 echo "==> Populating Resources/"
 RES_DIR="${APP_PATH}/Contents/Resources"
 mkdir -p "${RES_DIR}/rvc_backend" "${RES_DIR}/python"

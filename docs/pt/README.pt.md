@@ -63,7 +63,8 @@ Na primeira execução, o app cria `~/Documents/RVC-WebUI/` e subdiretórios par
 
 ```bash
 # Pré-requisitos: Homebrew, Xcode CLT, Miniforge/conda
-brew install xcodegen conda-pack
+brew install xcodegen
+conda install -n base -c conda-forge conda-pack
 
 # 1. Clonar
 git clone https://github.com/RTCKPRO/RVC-WebUI-MacOS.git
@@ -77,7 +78,10 @@ conda activate rvc
 python tools/test_rpc.py
 # esperado: notificação "ready" → resposta de initialize → resource_stats a cada segundo
 
-# 4. Construir o bundle .app completo
+# 4. Baixar os assets de modelos do HuggingFace (hubert / rmvpe / pretrained_v2 / uvr5_weights, cerca de 2 GB)
+./tools/download_assets.sh --all
+
+# 5. Construir o bundle .app completo
 ./build_app.sh
 # Produto: build/RVC-WebUI.app  (cerca de 4 GB incluindo PyTorch e todos os modelos)
 ```
