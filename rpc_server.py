@@ -541,7 +541,11 @@ def rpc_vc_single(params: dict) -> dict:
 
         emit_progress(task_id, 90, "Saving output", "inference")
         tgt_sr, audio_opt = opt
-        save_audio(output_path, audio_opt, tgt_sr, f32=True, format=fmt)
+        # audio_opt is already int16-scale (modules.py:vc_single applies .astype(np.int16)).
+        # f32=True would cast int16 values into a float32 IEEE WAV where ±1.0 is full
+        # scale — the ±32440 values then explode into 32440× overgain and clip hard
+        # in every downstream player / FLAC re-encode. Keep f32=False for int16 PCM.
+        save_audio(output_path, audio_opt, tgt_sr, f32=False, format=fmt)
         emit_progress(task_id, 100, "Done", "inference")
 
         return {
@@ -608,7 +612,8 @@ def rpc_vc_multi(params: dict) -> dict:
                 model_stem = Path(sid).stem if sid else "model"
                 out_name = f"{Path(path).stem}_{model_stem}.{fmt}"
                 out_path = str(Path(out_root) / out_name)
-                save_audio(out_path, audio_opt, tgt_sr, f32=True, format=fmt)
+                # See rpc_vc_single above: audio_opt is int16-scale, so f32=False.
+                save_audio(out_path, audio_opt, tgt_sr, f32=False, format=fmt)
                 results.append({"input": path, "output": out_path, "info": info})
             else:
                 results.append({"input": path, "output": None, "info": info})
