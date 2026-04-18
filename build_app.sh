@@ -15,7 +15,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${ROOT_DIR}/build"
-APP_NAME="RVC Swift.app"
+# xcodebuild output is "RVC Swift.app" (driven by PRODUCT_NAME in RVCApp/project.yml),
+# but the distribution bundle users see — Release zip, /Applications entry,
+# documentation examples — is "RVC-WebUI.app". We rename on copy below.
+XCODE_OUTPUT_NAME="RVC Swift.app"
+APP_NAME="RVC-WebUI.app"
 APP_PATH="${BUILD_DIR}/${APP_NAME}"
 
 SKIP_CONDA=0
@@ -69,11 +73,19 @@ if [[ $SKIP_XCODE -eq 0 ]]; then
         -scheme RVCApp \
         -configuration Release \
         build
-
-    # SYMROOT in project.yml outputs directly to build/Release/.
-    rm -rf "${APP_PATH}"
-    cp -R "${BUILD_DIR}/Release/RVC Swift.app" "${APP_PATH}"
 fi
+
+# Rename xcodebuild output (SYMROOT -> build/Release/"${XCODE_OUTPUT_NAME}")
+# to the distribution bundle name. Done outside the SKIP_XCODE gate so that
+# --skip-xcode runs can still refresh ${APP_PATH} from an earlier xcodebuild.
+XCODE_APP_PATH="${BUILD_DIR}/Release/${XCODE_OUTPUT_NAME}"
+if [[ ! -d "${XCODE_APP_PATH}" ]]; then
+    echo "==> ERROR: Xcode output bundle not found: ${XCODE_APP_PATH}" >&2
+    echo "==> Run without --skip-xcode to regenerate it." >&2
+    exit 1
+fi
+rm -rf "${APP_PATH}"
+cp -R "${XCODE_APP_PATH}" "${APP_PATH}"
 
 # ---------------------------------------------------------------------------
 # Step 3: Copy Python backend + assets into the bundle.
@@ -102,6 +114,13 @@ fi
 echo "==> Populating Resources/"
 RES_DIR="${APP_PATH}/Contents/Resources"
 mkdir -p "${RES_DIR}/rvc_backend" "${RES_DIR}/python"
+
+# Strip macOS App Management 'com.apple.provenance' xattr from source trees
+# before rsync. Without this, macOS Sequoia (14+) blocks rsync mkstempat with
+# EPERM when it tries to write into the .app bundle, failing Step 3 with
+# "Operation not permitted" on conda-pack output files.
+xattr -cr "${PYTHON_BUNDLE}" 2>/dev/null || true
+xattr -cr "${ROOT_DIR}/assets" 2>/dev/null || true
 
 # Python code (everything rpc_server.py imports).
 for d in configs infer rvc i18n tools; do
