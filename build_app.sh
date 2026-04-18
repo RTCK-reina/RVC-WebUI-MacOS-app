@@ -90,23 +90,65 @@ cp -R "${XCODE_APP_PATH}" "${APP_PATH}"
 # ---------------------------------------------------------------------------
 # Step 3: Copy Python backend + assets into the bundle.
 # ---------------------------------------------------------------------------
-# Pre-flight: required model weights must already be downloaded.
-# Running the app without these produces "Model file not found" errors at
-# inference / realtime VC time.
+# Pre-flight: required model weights must already be downloaded and match the
+# expected SHA-256 tracked in sha256.env. Verifying the hash (not just file
+# size) catches HTML error pages and partial downloads that happen to exceed
+# a size floor — both produce silently broken .app bundles otherwise.
+SHA_FILE="${ROOT_DIR}/sha256.env"
+if [[ ! -f "${SHA_FILE}" ]]; then
+    echo "==> ERROR: checksum file not found: ${SHA_FILE}" >&2
+    exit 1
+fi
+
+if command -v shasum >/dev/null 2>&1; then
+    _sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
+elif command -v sha256sum >/dev/null 2>&1; then
+    _sha256() { sha256sum "$1" | awk '{print $1}'; }
+else
+    echo "==> ERROR: neither 'shasum' nor 'sha256sum' is available for asset verification." >&2
+    exit 1
+fi
+
+# "<relative asset path>:<sha256.env key>" pairs. Keep the required set minimal
+# (hubert + rmvpe are the two assets whose absence breaks single inference /
+# realtime VC / UVR5); pretrained_v{1,2} and UVR5 weights are optional at
+# build time and tolerated at runtime.
 REQUIRED_ASSETS=(
-    "assets/hubert/hubert_base.pt"
-    "assets/rmvpe/rmvpe.pt"
+    "assets/hubert/hubert_base.pt:sha256_hubert_base_pt"
+    "assets/rmvpe/rmvpe.pt:sha256_rmvpe_pt"
 )
-MISSING_ASSETS=()
-for asset in "${REQUIRED_ASSETS[@]}"; do
+
+asset_errors=0
+for entry in "${REQUIRED_ASSETS[@]}"; do
+    asset="${entry%%:*}"
+    key="${entry##*:}"
     asset_path="${ROOT_DIR}/${asset}"
-    if [[ ! -s "${asset_path}" ]] || [[ $(stat -f%z "${asset_path}" 2>/dev/null || stat -c%s "${asset_path}") -lt 10000 ]]; then
-        MISSING_ASSETS+=("${asset}")
+
+    if [[ ! -s "${asset_path}" ]]; then
+        echo "==> ERROR: required asset missing or empty: ${asset}" >&2
+        asset_errors=$((asset_errors + 1))
+        continue
+    fi
+
+    expected=$(awk -F= -v k="${key}" '
+        { gsub(/[[:space:]]/, "", $1) }
+        $1 == k { gsub(/[[:space:]]/, "", $2); print $2; exit }
+    ' "${SHA_FILE}")
+
+    if [[ ! "${expected}" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+        echo "==> ERROR: ${key} not found (or invalid) in ${SHA_FILE}" >&2
+        asset_errors=$((asset_errors + 1))
+        continue
+    fi
+
+    actual=$(_sha256 "${asset_path}")
+    if [[ "${actual}" != "${expected}" ]]; then
+        echo "==> ERROR: SHA-256 mismatch for ${asset}: expected ${expected} got ${actual}" >&2
+        asset_errors=$((asset_errors + 1))
     fi
 done
-if (( ${#MISSING_ASSETS[@]} > 0 )); then
-    echo "==> ERROR: required model assets are missing or empty:" >&2
-    for asset in "${MISSING_ASSETS[@]}"; do echo "      ${asset}" >&2; done
+
+if (( asset_errors > 0 )); then
     echo "==> Run ./tools/download_assets.sh --all first, then re-run this script." >&2
     exit 1
 fi
