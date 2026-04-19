@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the standalone RVC Swift.app bundle.
+# Build the standalone RVC-WebUI.app bundle.
 #
 # Requirements:
 #   brew install xcodegen
@@ -9,7 +9,10 @@
 # Usage:
 #   ./build_app.sh [--skip-conda] [--skip-xcode] [--skip-sign]
 #
-# Produces: build/RVC Swift.app
+# Produces: build/RVC-WebUI.app
+# (xcodebuild itself emits "RVC Swift.app" driven by PRODUCT_NAME in
+#  RVCApp/project.yml; this script renames on copy so the distributed
+#  bundle / Release zip / documentation all use RVC-WebUI.app.)
 
 set -euo pipefail
 
