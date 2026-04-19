@@ -346,11 +346,19 @@ class VC:
                 if "Success" in info:
                     try:
                         tgt_sr, audio_opt = opt
+                        # Dead-code-ish: the live batch-inference path is
+                        # rpc_vc_multi (rpc_server.py) which calls vc_single
+                        # directly. This legacy Gradio-era VC.vc_multi has no
+                        # caller but we still keep it in sync with the fix in
+                        # commit 18a64bf — audio_opt is int16-scale (vc_single
+                        # applies .astype(np.int16)), so f32=True would cast
+                        # int16 values into an IEEE float WAV and overgain by
+                        # ~32440× on playback. Keep f32=False.
                         save_audio(
                             "%s/%s.%s" % (opt_root, os.path.basename(path), format1),
                             audio_opt,
                             tgt_sr,
-                            f32=True,
+                            f32=False,
                         )
                     except:
                         info += traceback.format_exc()

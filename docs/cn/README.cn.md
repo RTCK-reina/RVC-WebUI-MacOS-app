@@ -63,7 +63,8 @@ RVC-WebUI-MacOS 将 [Retrieval-based Voice Conversion WebUI](https://github.com/
 
 ```bash
 # 前置要求: Homebrew、Xcode CLT、Miniforge/conda
-brew install xcodegen conda-pack
+brew install xcodegen
+conda install -n base -c conda-forge conda-pack
 
 # 1. 克隆
 git clone https://github.com/RTCKPRO/RVC-WebUI-MacOS.git
@@ -77,7 +78,10 @@ conda activate rvc
 python tools/test_rpc.py
 # 期望: "ready" 通知 → initialize 响应 → 每秒一次 resource_stats
 
-# 4. 构建完整 .app bundle
+# 4. 从 HuggingFace 下载模型资源 (hubert / rmvpe / pretrained_v2 / uvr5_weights，约 2 GB)
+./tools/download_assets.sh --all
+
+# 5. 构建完整 .app bundle
 ./build_app.sh
 # 产物: build/RVC-WebUI.app  （含 PyTorch 与全部模型，约 4 GB）
 ```
