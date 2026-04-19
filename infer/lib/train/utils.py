@@ -280,6 +280,17 @@ def get_hparams(init=True):
         help="if caching the dataset in GPU memory, 1 or 0",
     )
     parser.add_argument("-a", "--author", type=str, default="", help="Model author")
+    parser.add_argument(
+        "--cancel-sentinel",
+        type=str,
+        default="",
+        help=(
+            "Optional path to a sentinel file. When the file appears on"
+            " disk, the training loop exits at the next safe point so"
+            " the rpc cancel path can co-operatively stop PyTorch even"
+            " when SIGTERM is swallowed by a C extension."
+        ),
+    )
 
     args = parser.parse_args()
     name = args.experiment_dir
@@ -306,6 +317,9 @@ def get_hparams(init=True):
     hparams.if_cache_data_in_gpu = args.if_cache_data_in_gpu
     hparams.data.training_files = "%s/filelist.txt" % experiment_dir
     hparams.author = args.author
+    # Empty string means "no sentinel" — normalize to None so the
+    # training loop's check is a single None-or-path branch.
+    hparams.cancel_sentinel = args.cancel_sentinel or None
     return hparams
 
 
