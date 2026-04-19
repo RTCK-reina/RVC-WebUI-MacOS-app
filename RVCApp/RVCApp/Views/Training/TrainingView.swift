@@ -473,8 +473,14 @@ struct TrainingView: View {
                 cancelDisplay = .cancelled
             case .restarted:
                 cancelDisplay = .restarted
+            case .restartFailed(let reason):
+                // Everything we tried failed — the Python backend is down.
+                // Surface the real error instead of a success banner so
+                // the user knows to check logs / restart manually.
+                cancelDisplay = .failed(reason)
             }
-            // Clear the banner after a brief visible interval.
+            // Clear the banner after a brief visible interval, but
+            // leave .failed up so the user can read the reason.
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             if cancelDisplay == .cancelled || cancelDisplay == .restarted {
                 cancelDisplay = .idle

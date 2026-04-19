@@ -201,12 +201,17 @@ def _cancel_task(task_id: str, force: bool = False) -> bool:
     train_all registers sub-stages as "{parent_id}_preprocess", etc.
     Cancelling the parent ID cascades to all sub-stages.
 
+    The sentinel file at ``task.sentinel_path`` (when set) is touched
+    on **every** cancel — both soft and force — because the sentinel is
+    an orthogonal, always-useful self-exit signal for a co-operating
+    subprocess: there's no harm in offering a clean shutdown path even
+    when we haven't escalated to SIGKILL yet.
+
     When ``force`` is True, we additionally set ``force_kill_requested``
     on every matching task so the tail-log loop skips its SIGTERM grace
     period and goes straight to SIGKILL — used by the UI's "strong stop"
     path when a plain cancel doesn't take effect within a couple of
-    seconds. Also touches ``task.sentinel_path`` if set, giving a
-    co-operating subprocess a second self-exit channel.
+    seconds.
     """
     cancelled_any = False
     with _tasks_lock:

@@ -25,14 +25,20 @@ enum PythonBridgeError: Error, LocalizedError {
 
 /// Outcome of a staged cancel attempt (see `PythonBridge.cancelTask`).
 /// Exposed so the UI can distinguish "backend reacted cleanly" from
-/// "we had to SIGKILL the whole backend to recover".
+/// "we had to SIGKILL the whole backend to recover" from "everything
+/// we tried failed and the user needs to do something".
 enum CancelOutcome: Equatable {
     /// Soft cancel succeeded within the first timeout window.
     case graceful
     /// Soft cancel timed out; `force=true` retry succeeded.
     case forced
-    /// Both cancels timed out; the Python backend was restarted.
+    /// Both cancels timed out; the Python backend was SIGKILLed and
+    /// successfully relaunched.
     case restarted
+    /// Both cancels timed out AND the relaunch also failed — the
+    /// backend is currently down. The reason (as reported by the
+    /// relaunch error) is included so the UI can surface it.
+    case restartFailed(String)
 }
 
 /// Owns the Python subprocess, owns the stdin/stdout pipes, and multiplexes
@@ -293,39 +299,70 @@ final class PythonBridge: ObservableObject {
         }
 
         // Stage 3: the backend itself is wedged. Nuke and relaunch.
-        await hardRestart()
+        let restartError = await hardRestart()
+        if let msg = restartError {
+            return .restartFailed(msg)
+        }
         return .restarted
     }
 
     /// SIGKILL the Python backend and relaunch it with the same args.
     /// Last-resort recovery when even `cancel` RPCs are wedged. Clears
     /// all pending RPC continuations (via the terminationHandler path).
-    func hardRestart() async {
+    ///
+    /// Returns ``nil`` on success, or a short error message on failure —
+    /// callers should surface the message to the user since the backend
+    /// is down until `start()` succeeds.
+    @discardableResult
+    func hardRestart() async -> String? {
         guard let args = lastStartArgs else {
-            log("=== hardRestart: no cached start args, cannot relaunch")
+            let msg = "no cached start args, cannot relaunch"
+            log("=== hardRestart: \(msg)")
             killSync()
             process = nil
             _backendPID = 0
             isReady = false
             isAlive = false
-            return
+            activeProgress.removeAll()
+            cancelledTaskIDs.removeAll()
+            return msg
         }
         log("=== hardRestart: killing backend pid=\(_backendPID)")
         killSync()
-        // Wait briefly for terminationHandler to drain pendingRequests.
-        // Without this, a restart that raced with a just-issued RPC
-        // could leave orphaned continuations on the new process.
-        var spins = 0
-        while process != nil && spins < 50 {  // up to 1s
+        // Wait for the terminationHandler to drain pendingRequests before
+        // relaunching. The goal is "no continuations belonging to the
+        // old process leak into the new one", so observe that directly:
+        // handleTermination() clears pendingRequests and sets isReady=false.
+        // Drop out early as soon as those post-conditions hold.
+        let waitDeadline = Date().addingTimeInterval(1.5)
+        while Date() < waitDeadline {
+            let stillRunning = process?.isRunning == true
+            if !stillRunning && pendingRequests.isEmpty {
+                break
+            }
             try? await Task.sleep(nanoseconds: 20_000_000)
-            spins += 1
+        }
+        // Belt-and-suspenders: if terminationHandler never fired (e.g.
+        // the process object was never live enough to register it),
+        // fail any leftover continuations ourselves so they don't hang.
+        if !pendingRequests.isEmpty {
+            let leftover = pendingRequests
+            pendingRequests.removeAll()
+            for (_, cont) in leftover {
+                cont.resume(throwing: PythonBridgeError.processExited(-1))
+            }
         }
         process = nil
         _backendPID = 0
         isReady = false
         isAlive = false
-        // Clear any task progress: UI will rebuild state after relaunch.
+        // Clear task-side state so the relaunched backend's progress
+        // notifications are not suppressed by stale cancel records.
+        // Without this, cancelledTaskIDs can grow unbounded and, if a
+        // future task_id shares a prefix with a dead one, its progress
+        // updates get silently dropped.
         activeProgress.removeAll()
+        cancelledTaskIDs.removeAll()
         do {
             try await start(
                 pythonExec: args.pythonExec,
@@ -334,9 +371,12 @@ final class PythonBridge: ObservableObject {
                 userDir: args.userDir,
             )
             log("=== hardRestart: relaunch succeeded")
+            return nil
         } catch {
+            let msg = error.localizedDescription
             log("=== hardRestart: relaunch FAILED \(error)")
-            lastError = "Backend restart failed: \(error.localizedDescription)"
+            lastError = "Backend restart failed: \(msg)"
+            return msg
         }
     }
 

@@ -449,8 +449,15 @@ class TestTerminateProcs:
         assert result["killed"] == []
         assert result["residual"] == []
 
-    def test_force_sigkill_under_one_second(self, monkeypatch):
-        """graceful_wait=0.0 なら SIGTERM 段階を飛ばして 1 秒以内に殺せる。"""
+    def test_force_sigkill_is_fast_and_leaves_no_residual(self, monkeypatch):
+        """graceful_wait=0.0 なら SIGTERM 段階を飛ばして素早く殺せる。
+
+        Process-group SIGKILL は OS レベルで無視不能なので機能的には決定的だが、
+        負荷の高い CI/macOS ランナーではスケジューリング遅延で 1 秒をわずかに
+        超えることがある。機能要件（プロセスが消えている + residual が空）を
+        主判定にし、時間は実運用で許容できる 3 秒を上限にする（graceful_wait=0
+        なので 3 秒かかれば明確に実装退行）。
+        """
         rt = self._import_rpc_training()
         monkeypatch.setattr(rt, "psutil", None)
         p = _spawn_sleeping_proc(60)
@@ -461,9 +468,13 @@ class TestTerminateProcs:
             try: p.wait(timeout=3)
             except Exception: pass
         elapsed = _time.monotonic() - start
-        assert elapsed < 1.0, f"force kill took {elapsed:.2f}s, expected <1s"
-        assert p.poll() is not None
+        # Primary assertions — functional correctness.
+        assert p.poll() is not None, "process should have exited"
         assert result["residual"] == [], f"residual PIDs after force kill: {result['residual']}"
+        # Secondary assertion — sanity bound on wall time to catch the
+        # "graceful_wait=0 got ignored" regression without being flaky
+        # on contended CI runners.
+        assert elapsed < 3.0, f"force kill took {elapsed:.2f}s, expected <3s"
 
     def test_graceful_then_sigkill(self, monkeypatch):
         """SIGTERM を無視するプロセスでも graceful_wait 経過後に SIGKILL。"""
