@@ -541,7 +541,8 @@ def rpc_vc_single(params: dict) -> dict:
 
         emit_progress(task_id, 90, "Saving output", "inference")
         tgt_sr, audio_opt = opt
-        # audio_opt is already int16-scale (modules.py:vc_single applies .astype(np.int16)).
+        # audio_opt is already int16-scale (infer/modules/vc/modules.py: VC.vc_single
+        # applies .astype(np.int16)).
         # f32=True would cast int16 values into a float32 IEEE WAV where ±1.0 is full
         # scale — the ±32440 values then explode into 32440× overgain and clip hard
         # in every downstream player / FLAC re-encode. Keep f32=False for int16 PCM.
