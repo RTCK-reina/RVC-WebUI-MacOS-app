@@ -63,6 +63,49 @@ struct TrainingView: View {
     @State private var logText: String = ""
     @State private var errorMsg: String?
     @State private var isRunning = false
+    @State private var cancelDisplay: CancelDisplay = .idle
+
+    /// Visible state of the staged cancel flow. Reflects the outcome of
+    /// `PythonBridge.cancelTask` so the user can distinguish "stopped
+    /// cleanly" from "we had to SIGKILL the whole backend".
+    private enum CancelDisplay: Equatable {
+        case idle
+        case cancelling       // 停止 RPC 送信中
+        case forceCancelling  // force=true へエスカレーション
+        case restarting       // hardRestart 実行中
+        case cancelled        // 停止完了（直近メッセージ）
+        case restarted        // バックエンド再起動で復帰
+        case failed(String)   // 例外等で停止不能
+
+        var bannerMessage: String? {
+            switch self {
+            case .idle: return nil
+            case .cancelling: return "停止中..."
+            case .forceCancelling: return "応答が遅いため強制停止を送信中..."
+            case .restarting: return "バックエンドを再起動中..."
+            case .cancelled: return "停止しました"
+            case .restarted: return "バックエンドを再起動して復帰しました"
+            case .failed(let s): return "停止失敗: \(s)"
+            }
+        }
+
+        var bannerTint: Color {
+            switch self {
+            case .cancelled, .restarted: return .green
+            case .failed: return .red
+            case .idle: return .clear
+            default: return .orange
+            }
+        }
+
+        var bannerIcon: String {
+            switch self {
+            case .failed: return "exclamationmark.triangle.fill"
+            case .cancelled, .restarted: return "checkmark.circle"
+            default: return "stop.circle"
+            }
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -78,6 +121,12 @@ struct TrainingView: View {
                         taskID: currentTaskID,
                         title: "処理中",
                         onCancel: cancel)
+                }
+                if let msg = cancelDisplay.bannerMessage {
+                    Label(msg, systemImage: cancelDisplay.bannerIcon)
+                        .padding(10)
+                        .foregroundStyle(cancelDisplay.bannerTint)
+                        .background(cancelDisplay.bannerTint.opacity(0.1), in: .rect(cornerRadius: 8))
                 }
                 if let err = errorMsg {
                     Label(err, systemImage: "exclamationmark.triangle.fill")
@@ -390,10 +439,46 @@ struct TrainingView: View {
 
     private func cancel() {
         let id = currentTaskID
+        guard !id.isEmpty else { return }
+        cancelDisplay = .cancelling
+        // Clear progress immediately so the UI stops re-rendering stale
+        // percentages while the multi-stage cancel unfolds. cancelledTaskIDs
+        // is used on the bridge side to ignore late progress notifications.
+        bridge.clearProgress(for: id)
         Task {
-            _ = try? await bridge.callRaw("cancel",
-                params: .object(["task_id": .string(id)]))
-            bridge.clearProgress(for: id)
+            // Stage-1 timeout (2s) covers the common case where the
+            // backend is blocked on the tail log but will respond once
+            // SIGTERM lands. Stage 2 (force=true) is surfaced here so
+            // the user sees it happen; the bridge escalates internally.
+            let stageTwoDelay: UInt64 = 2_100_000_000  // 2.1s
+            let flipToForce = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: stageTwoDelay)
+                if cancelDisplay == .cancelling {
+                    cancelDisplay = .forceCancelling
+                }
+            }
+            let flipToRestart = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: stageTwoDelay + 1_000_000_000)
+                if cancelDisplay == .forceCancelling {
+                    cancelDisplay = .restarting
+                }
+            }
+
+            let outcome = await bridge.cancelTask(id)
+            flipToForce.cancel()
+            flipToRestart.cancel()
+
+            switch outcome {
+            case .graceful, .forced:
+                cancelDisplay = .cancelled
+            case .restarted:
+                cancelDisplay = .restarted
+            }
+            // Clear the banner after a brief visible interval.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if cancelDisplay == .cancelled || cancelDisplay == .restarted {
+                cancelDisplay = .idle
+            }
         }
     }
 

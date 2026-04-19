@@ -169,6 +169,14 @@ class Task:
         self.task_id = task_id
         self.cancel_event = threading.Event()
         self.started_at = time.time()
+        # Set by _cancel_task(force=True); consumed by _tail_log_until_done
+        # to skip the SIGTERM grace period and go straight to SIGKILL.
+        self.force_kill_requested: bool = False
+        # Optional filesystem sentinel. When cancel fires we touch this
+        # path so long-running subprocesses (e.g. train.py) can poll for
+        # it and self-exit at the next checkpoint — covers the case
+        # where SIGTERM is swallowed by a PyTorch C extension.
+        self.sentinel_path: Optional[Path] = None
 
 
 _tasks: Dict[str, Task] = {}
@@ -187,17 +195,33 @@ def _unregister_task(task_id: str) -> None:
         _tasks.pop(task_id, None)
 
 
-def _cancel_task(task_id: str) -> bool:
+def _cancel_task(task_id: str, force: bool = False) -> bool:
     """Cancel a task and all its children (prefix match).
 
     train_all registers sub-stages as "{parent_id}_preprocess", etc.
     Cancelling the parent ID cascades to all sub-stages.
+
+    When ``force`` is True, we additionally set ``force_kill_requested``
+    on every matching task so the tail-log loop skips its SIGTERM grace
+    period and goes straight to SIGKILL — used by the UI's "strong stop"
+    path when a plain cancel doesn't take effect within a couple of
+    seconds. Also touches ``task.sentinel_path`` if set, giving a
+    co-operating subprocess a second self-exit channel.
     """
     cancelled_any = False
     with _tasks_lock:
         for tid, t in _tasks.items():
             if tid == task_id or tid.startswith(task_id + "_"):
+                if force:
+                    t.force_kill_requested = True
                 t.cancel_event.set()
+                sentinel = getattr(t, "sentinel_path", None)
+                if sentinel is not None:
+                    try:
+                        sentinel.parent.mkdir(parents=True, exist_ok=True)
+                        sentinel.touch(exist_ok=True)
+                    except OSError:
+                        pass
                 cancelled_any = True
     return cancelled_any
 
@@ -1196,7 +1220,8 @@ def rpc_realtime_update_params(params: dict) -> dict:
 
 def rpc_cancel(params: dict) -> dict:
     tid = params.get("task_id", "")
-    return {"cancelled": _cancel_task(tid)}
+    force = bool(params.get("force", False))
+    return {"cancelled": _cancel_task(tid, force=force)}
 
 
 def rpc_shutdown(params: dict) -> dict:

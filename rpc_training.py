@@ -21,6 +21,11 @@ from typing import Callable, Dict, Optional
 
 import numpy as np
 
+try:
+    import psutil  # type: ignore
+except Exception:
+    psutil = None  # Fallback: killpg + kill(pid, 0) only.
+
 logger = logging.getLogger("rpc_training")
 
 # sr name -> Hz (mirrors web.py sr_dict)
@@ -76,34 +81,117 @@ def _spawn(cmd: list, cwd: str, log_path: Path) -> subprocess.Popen:
         )
 
 
-def _terminate_procs(procs: list, graceful_wait: float = 3.0) -> None:
-    """Kill process groups so that child processes (e.g. mp.Process from
-    train.py) are also terminated.
+def _pid_alive(pid: int) -> bool:
+    """Return True if *pid* refers to a non-zombie live process.
 
-    Sends SIGTERM to each process group, waits up to `graceful_wait`
-    seconds, then sends SIGKILL to anything still running. Never raises.
+    Zombies are treated as dead — after SIGKILL, a direct child sits as
+    a zombie until the parent ``wait()``s, and we don't want the verify
+    loop spinning on that. Without psutil we try ``waitpid(WNOHANG)``
+    first to reap our own zombie children (ECHILD when not our child —
+    we then fall back to ``kill(pid, 0)`` existence check). Never raises.
+    """
+    if psutil is not None:
+        try:
+            proc = psutil.Process(pid)
+            return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            return False
+    # psutil-free path.
+    try:
+        waited, _status = os.waitpid(pid, os.WNOHANG)
+        if waited == pid:
+            # It was our child and we just reaped its zombie.
+            return False
+    except (ChildProcessError, OSError):
+        # Not our child, or already reaped. Fall through to kill-0 probe.
+        pass
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
+def _collect_descendant_pids(pids: list) -> list:
+    """Return *pids* plus every descendant PID we can observe via psutil.
+
+    Without psutil we have no cross-platform way to walk the tree, so we
+    return the input unchanged — the caller still gets the process-group
+    kill path via ``os.killpg``. With psutil we pick up grandchildren that
+    escaped the original session (e.g. a helper script that itself called
+    ``start_new_session=True``), which ``killpg`` alone would miss.
+    Order is preserved and duplicates removed.
+    """
+    out = list(pids)
+    if psutil is None:
+        return list(dict.fromkeys(out))
+    for pid in pids:
+        try:
+            for child in psutil.Process(pid).children(recursive=True):
+                out.append(child.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            pass
+    return list(dict.fromkeys(out))
+
+
+def _terminate_procs(
+    procs: list,
+    graceful_wait: float = 3.0,
+    verify: bool = True,
+) -> dict:
+    """Kill process groups and every descendant we can reach.
+
+    Layered so that "strong kill" requirements are met even when the
+    primary target ignores SIGTERM:
+
+    1. When ``graceful_wait > 0``, SIGTERM the process group and wait up
+       to ``graceful_wait`` seconds for clean exit.
+    2. SIGKILL the process group (covers children spawned in the same
+       session) AND every PID returned by
+       ``psutil.Process.children(recursive=True)`` (covers grandchildren
+       that ``setsid`` into a new session — e.g. internal
+       ``subprocess.Popen(..., start_new_session=True)`` inside a training
+       helper).
+    3. When ``verify=True``, loop for up to 2 seconds re-issuing SIGKILL
+       to any PID that stubbornly survives, so callers can distinguish
+       "killed cleanly" from "stuck in uninterruptible kernel wait".
+
+    Pass ``graceful_wait=0.0`` to skip SIGTERM entirely — used by the
+    ``force`` cancel path (see ``_cancel_task(force=True)``).
+
+    Returns ``{"killed": [pid, ...], "residual": [pid, ...]}``. Existing
+    call sites ignore the return value, so this is backwards-compatible.
+    Never raises.
     """
     import signal as _signal
-    alive = [p for p in procs if p is not None and p.poll() is None]
-    for p in alive:
-        try:
-            # Kill the entire process group (created via start_new_session).
-            os.killpg(os.getpgid(p.pid), _signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            try:
-                p.terminate()
-            except Exception:
-                pass
-    # Give them a chance to clean up.
     import time as _time
-    deadline = _time.time() + graceful_wait
-    while _time.time() < deadline:
-        alive = [p for p in alive if p.poll() is None]
-        if not alive:
-            return
-        _time.sleep(0.1)
-    # Still alive: force kill the group and wait for actual exit.
-    for p in alive:
+
+    alive_procs = [p for p in procs if p is not None and p.poll() is None]
+    if not alive_procs:
+        return {"killed": [], "residual": []}
+
+    ancestor_pids = [p.pid for p in alive_procs]
+    all_pids = _collect_descendant_pids(ancestor_pids)
+
+    if graceful_wait > 0:
+        for p in alive_procs:
+            try:
+                os.killpg(os.getpgid(p.pid), _signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+        deadline = _time.time() + graceful_wait
+        while _time.time() < deadline:
+            if all(p.poll() is not None for p in alive_procs):
+                # Grandchildren may still be around even if the direct
+                # Popen child exited; fall through to the SIGKILL sweep.
+                break
+            _time.sleep(0.1)
+
+    # SIGKILL the process groups first (cheap, catches most children).
+    for p in alive_procs:
         try:
             os.killpg(os.getpgid(p.pid), _signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
@@ -111,12 +199,46 @@ def _terminate_procs(procs: list, graceful_wait: float = 3.0) -> None:
                 p.kill()
             except Exception:
                 pass
-    # Wait for processes to actually exit after SIGKILL.
-    for p in alive:
+    # Belt-and-suspenders: also SIGKILL every descendant we resolved via
+    # psutil. Catches grandchildren that re-sessioned away from the group.
+    if psutil is not None:
+        for pid in all_pids:
+            try:
+                psutil.Process(pid).kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                pass
+
+    # Reap Popen returncodes BEFORE the verify loop: without this, a
+    # freshly-killed direct child sits as a zombie until wait()
+    # acknowledges it, and the psutil-less `os.kill(pid, 0)` fallback
+    # still reports the zombie as "alive" — making the verify loop spin
+    # for its full 2s window even though the process is fully dead.
+    for p in alive_procs:
         try:
-            p.wait(timeout=2)
+            p.wait(timeout=0.5)
         except Exception:
             pass
+
+    residual: list = []
+    if verify:
+        deadline = _time.time() + 2.0
+        while _time.time() < deadline:
+            residual = [pid for pid in all_pids if _pid_alive(pid)]
+            if not residual:
+                break
+            for pid in residual:
+                try:
+                    os.kill(pid, _signal.SIGKILL)
+                except OSError:
+                    pass
+            _time.sleep(0.1)
+
+    if residual:
+        logger.warning(
+            "_terminate_procs: %d PIDs still alive after SIGKILL: %r",
+            len(residual), residual,
+        )
+    return {"killed": all_pids, "residual": residual}
 
 
 def _tail_log_until_done(
@@ -129,48 +251,74 @@ def _tail_log_until_done(
     procs: Optional[list] = None,
     phase: str = "training",
     percent_from_log: Optional[Callable[[str], Optional[float]]] = None,
+    task: Optional[object] = None,
 ) -> str:
     """Stream log_path growth while the subprocess runs.
 
-    Emits a `progress` notification every second with the tail of the log.
-    On cancellation, SIGTERM all known subprocesses and fall back to SIGKILL
-    after a short grace period. Returns the full final log contents.
+    Emits a `progress` notification roughly every second with the tail of
+    the log. On cancellation, kill every known subprocess (and its
+    descendants) — if ``task.force_kill_requested`` is set, skip the
+    SIGTERM grace period entirely and go straight to SIGKILL so "stop"
+    feels instantaneous. Returns the full final log contents.
 
     `proc` accepts a single subprocess.Popen; `procs` accepts a list (for
-    multi-process stages like F0 feature extraction).
+    multi-process stages like F0 feature extraction). Passing ``task``
+    enables the force-kill path and surfaces residual-PID warnings via
+    ``emit_progress``.
     """
     last_size = 0
     last_tail = ""
     percent = 0.0
+    # Loop every 0.2s so cancel_event detection is at most ~200ms late,
+    # but only actually re-read/emit once per second to avoid log churn.
+    POLL = 0.2
+    EMIT_EVERY = 1.0
+    last_emit = 0.0
 
     while not proc_done_event.is_set():
         if cancel_event is not None and cancel_event.is_set():
             target_procs = list(procs) if procs else []
             if proc is not None:
                 target_procs.append(proc)
-            _terminate_procs(target_procs, graceful_wait=3.0)
+            grace = 0.0 if (task is not None and getattr(task, "force_kill_requested", False)) else 3.0
+            result = _terminate_procs(target_procs, graceful_wait=grace)
+            if isinstance(result, dict) and result.get("residual"):
+                # Surface "SIGKILL could not reap everything" to the UI so
+                # the operator knows a manual cleanup may be required.
+                try:
+                    emit_progress(
+                        task_id,
+                        percent,
+                        f"stop: residual PIDs {result['residual']}",
+                        phase,
+                    )
+                except Exception:
+                    pass
             break
-        try:
-            if log_path.exists():
-                size = log_path.stat().st_size
-                if size != last_size:
-                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
-                    last_size = size
-                    # Show the last ~500 chars of log as progress message.
-                    last_tail = content[-500:].strip().replace("\n", " | ")
-                    if percent_from_log:
-                        derived = percent_from_log(content)
-                        if derived is not None:
-                            percent = derived
-            emit_progress(task_id, percent, last_tail or "running...", phase)
-        except Exception as e:
-            logger.warning("log tail error: %s", e)
+        now = time.monotonic()
+        if now - last_emit >= EMIT_EVERY:
+            try:
+                if log_path.exists():
+                    size = log_path.stat().st_size
+                    if size != last_size:
+                        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                            content = f.read()
+                        last_size = size
+                        # Show the last ~500 chars of log as progress message.
+                        last_tail = content[-500:].strip().replace("\n", " | ")
+                        if percent_from_log:
+                            derived = percent_from_log(content)
+                            if derived is not None:
+                                percent = derived
+                emit_progress(task_id, percent, last_tail or "running...", phase)
+            except Exception as e:
+                logger.warning("log tail error: %s", e)
+            last_emit = now
         # Use Event.wait instead of sleep so cancel wakes us immediately.
         if cancel_event is not None:
-            cancel_event.wait(1.0)
+            cancel_event.wait(POLL)
         else:
-            time.sleep(1.0)
+            time.sleep(POLL)
 
     # Final read.
     try:
@@ -270,6 +418,7 @@ def rpc_preprocess(params: dict, ctx):
         log = _tail_log_until_done(
             log_path, done_event, task_id, emit_progress,
             cancel_event=task.cancel_event, proc=proc, phase="preprocessing",
+            task=task,
         )
         # Cancellation is authoritative over returncode: after _terminate_procs
         # sends SIGTERM + SIGKILL, `proc.returncode` may still be None if the
@@ -346,6 +495,7 @@ def rpc_extract_f0(params: dict, ctx):
             _tail_log_until_done(
                 log_path, done_event, task_id, emit_progress,
                 cancel_event=task.cancel_event, proc=proc, phase="f0",
+                task=task,
             )
             # Same cancellation-over-returncode ordering as rpc_preprocess:
             # after SIGTERM the returncode may still be None on a racy exit.
@@ -384,6 +534,7 @@ def rpc_extract_f0(params: dict, ctx):
         log = _tail_log_until_done(
             log_path, done_event, task_id, emit_progress,
             cancel_event=task.cancel_event, procs=procs, phase="features",
+            task=task,
         )
         # Cancellation-over-returncode: if we were cancelled, one or more
         # workers may still have returncode=None (SIGTERM grace elapsed
@@ -462,6 +613,19 @@ def rpc_train(params: dict, ctx):
             )
 
     task = register_task(task_id)
+    # Wire a cancel sentinel: rpc_server._cancel_task() touches this file
+    # when a force-cancel arrives, and train.py polls it at epoch/batch
+    # boundaries. Second channel, orthogonal to SIGTERM/SIGKILL — lets
+    # training self-exit even if the signal is stuck behind a PyTorch
+    # C extension. Unlink any stale sentinel from a prior run so we don't
+    # exit immediately on startup.
+    sentinel = exp_dir / ".cancel_sentinel"
+    try:
+        if sentinel.exists():
+            sentinel.unlink()
+    except OSError:
+        pass
+    task.sentinel_path = sentinel
     status("training")
     try:
         base = str(config.base_dir)
@@ -479,6 +643,7 @@ def rpc_train(params: dict, ctx):
             "-sw", "1" if if_save_every_weights else "0",
             "-v", version,
             "-a", author,
+            "--cancel-sentinel", str(sentinel),
         ]
         if pretrained_G:
             cmd += ["-pg", pretrained_G]
@@ -501,6 +666,7 @@ def rpc_train(params: dict, ctx):
             log_path, done_event, task_id, emit_progress,
             cancel_event=task.cancel_event, proc=proc, phase="training",
             percent_from_log=_train_percent_from_log,
+            task=task,
         )
         # Cancellation-over-returncode: see rpc_preprocess for the rationale.
         if task.cancel_event.is_set():
