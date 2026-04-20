@@ -6,7 +6,6 @@ librosa>=0.10.2
 llvmlite
 fairseq
 faiss-cpu
-gradio
 Cython
 pydub>=0.25.1
 tensorboardX
