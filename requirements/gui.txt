@@ -3,8 +3,6 @@
 # MPS (Apple Silicon) support requires torch >= 2.0.
 einops
 fairseq
-flask
-flask_cors
 gin
 gin_config
 librosa
@@ -21,6 +19,5 @@ tensorboard
 tqdm
 FreeSimpleGUI
 sounddevice
-gradio
 noisereduce
 torchfcpe

@@ -6,7 +6,6 @@ librosa>=0.10.2
 llvmlite
 fairseq @ git+https://github.com/One-sixth/fairseq.git
 faiss-cpu
-gradio
 Cython
 pydub>=0.25.1
 tensorboardX
