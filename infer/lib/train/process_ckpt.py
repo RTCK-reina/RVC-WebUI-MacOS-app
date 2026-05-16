@@ -249,13 +249,12 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
 
         def extract(ckpt):
             a = ckpt["model"]
-            opt = OrderedDict()
-            opt["weight"] = {}
+            out = OrderedDict()
             for key in a.keys():
                 if "enc_q" in key:
                     continue
-                opt["weight"][key] = a[key]
-            return opt
+                out[key] = a[key]
+            return out
 
         def authors(c1, c2):
             a1, a2 = c1.get("author", ""), c2.get("author", "")
@@ -270,6 +269,7 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
         ckpt1 = torch.load(path1, map_location="cpu")
         ckpt2 = torch.load(path2, map_location="cpu")
         cfg = ckpt1["config"]
+        author = authors(ckpt1, ckpt2)
         if "model" in ckpt1:
             ckpt1 = extract(ckpt1)
         else:
@@ -294,7 +294,6 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
                 opt["weight"][key] = (
                     alpha1 * (ckpt1[key].float()) + (1 - alpha1) * (ckpt2[key].float())
                 ).half()
-        author = authors(ckpt1, ckpt2)
         opt["config"] = cfg
         """
         if(sr=="40k"):opt["config"] = [1025, 32, 192, 192, 768, 2, 6, 3, 0, "1", [3, 7, 11], [[1, 3, 5], [1, 3, 5], [1, 3, 5]], [10, 10, 2, 2], 512, [16, 16, 4, 4,4], 109, 256, 40000]
@@ -306,7 +305,7 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
         if author:
             opt["author"] = author
         opt["sr"] = sr
-        opt["f0"] = 1 if f0 == i18n("Yes") else 0
+        opt["f0"] = int(f0)
         opt["version"] = version
         opt["info"] = info
         h = model_hash_ckpt(opt)
