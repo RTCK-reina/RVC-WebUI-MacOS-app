@@ -38,8 +38,15 @@ struct RealtimeVCView: View {
     @State private var isRunning = false
     @State private var errorMsg: String?
     @State private var lastInfo: String = ""
+    @State private var eventLogExpanded: Bool = false
 
     private let f0Methods = ["pm", "harvest", "dio", "crepe", "rmvpe", "fcpe"]
+
+    private static let logTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
 
     var body: some View {
         ScrollView {
@@ -54,6 +61,14 @@ struct RealtimeVCView: View {
                         .padding(10)
                         .foregroundStyle(.red)
                         .background(.red.opacity(0.1), in: .rect(cornerRadius: 8))
+                }
+                if isRunning {
+                    diagnosticsStatusCard
+                    meterCard
+                    metricsCard
+                }
+                if isRunning || !bridge.realtimeEvents.isEmpty {
+                    eventLogCard
                 }
                 if !lastInfo.isEmpty {
                     Text(lastInfo)
@@ -204,6 +219,255 @@ struct RealtimeVCView: View {
         }
     }
 
+    // MARK: - Diagnostics cards
+
+    /// Top-line health summary — at a glance, is the session OK, gated, clipping, behind?
+    private var diagnosticsStatusCard: some View {
+        let m = bridge.realtimeMetrics
+        return GroupBox("状態") {
+            HStack(spacing: 8) {
+                badge(
+                    text: m.errorCount > 0 ? "推論エラー" : "推論OK",
+                    color: m.errorCount > 0 ? .red : .green)
+                badge(
+                    text: m.isGated ? "無音ゲート中" : "音声あり",
+                    color: m.isGated ? .orange : .blue)
+                switch m.latencyHealth {
+                case .ok:       badge(text: "レイテンシOK", color: .green)
+                case .warn:     badge(text: "レイテンシ警告", color: .yellow)
+                case .critical: badge(text: "レイテンシ不足", color: .red)
+                case .unknown:  badge(text: "計測中", color: .gray)
+                }
+                if m.inputClipped { badge(text: "入力クリップ", color: .red) }
+                if m.outputClipped { badge(text: "出力クリップ", color: .red) }
+                Spacer()
+            }
+            .padding(8)
+        }
+    }
+
+    private func badge(text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption).bold()
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(color.opacity(0.18), in: .capsule)
+            .foregroundStyle(color)
+            .overlay(Capsule().stroke(color.opacity(0.4), lineWidth: 0.5))
+    }
+
+    /// VU meters for input and output. The threshold marker on the input row
+    /// shows where the noise gate kicks in, so the user can see whether their
+    /// signal is above or below it.
+    private var meterCard: some View {
+        let m = bridge.realtimeMetrics
+        return GroupBox("シグナル") {
+            VStack(alignment: .leading, spacing: 10) {
+                meterRow(
+                    label: "入力",
+                    rmsDB: m.inputRMSdB,
+                    peakDB: m.inputPeakdB,
+                    clipped: m.inputClipped,
+                    gated: m.isGated,
+                    thresholdDB: m.thresholdDB)
+                meterRow(
+                    label: "出力",
+                    rmsDB: m.outputRMSdB,
+                    peakDB: m.outputPeakdB,
+                    clipped: m.outputClipped,
+                    gated: false,
+                    thresholdDB: nil)
+                if m.inputRMSdB < -55 && !m.isGated {
+                    Label(
+                        "マイク信号がほぼ無音です。デバイス選択・接続・OSのマイク権限を確認してください。",
+                        systemImage: "questionmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if m.outputRMSdB < -55 && m.inputRMSdB > -40 && !m.isGated {
+                    Label(
+                        "入力は来ていますが出力が無音です。モデルロード・Protect値・推論エラーを確認してください。",
+                        systemImage: "speaker.slash")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private func meterRow(
+        label: String, rmsDB: Double, peakDB: Double,
+        clipped: Bool, gated: Bool, thresholdDB: Double?
+    ) -> some View {
+        let minDB: Double = -60
+        let maxDB: Double = 0
+        let rmsNorm = max(0, min(1, (rmsDB - minDB) / (maxDB - minDB)))
+        let peakNorm = max(0, min(1, (peakDB - minDB) / (maxDB - minDB)))
+        return HStack(spacing: 8) {
+            Text(label).font(.caption).bold()
+                .frame(width: 36, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Color.secondary.opacity(0.15))
+                    LinearGradient(
+                        colors: [.green, .green, .yellow, .red],
+                        startPoint: .leading, endPoint: .trailing)
+                        .frame(width: max(0, geo.size.width * rmsNorm))
+                        .opacity(gated ? 0.25 : 1.0)
+                    // Peak hold line — red on clip.
+                    Rectangle()
+                        .fill(clipped ? Color.red : Color.white.opacity(0.7))
+                        .frame(width: 2)
+                        .offset(x: max(0, geo.size.width * peakNorm - 1))
+                    // Threshold marker (input row only).
+                    if let t = thresholdDB {
+                        let tNorm = max(0, min(1, (t - minDB) / (maxDB - minDB)))
+                        Rectangle()
+                            .fill(Color.orange)
+                            .frame(width: 1)
+                            .offset(x: geo.size.width * tNorm)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .frame(height: 14)
+            Text(String(format: "%5.1f dB", rmsDB))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 70, alignment: .trailing)
+        }
+    }
+
+    /// Numeric readouts for latency, over/underruns, and device info. Shows
+    /// contextual hints underneath when a condition is bad enough to act on.
+    private var metricsCard: some View {
+        let m = bridge.realtimeMetrics
+        return GroupBox("数値メトリクス") {
+            VStack(alignment: .leading, spacing: 8) {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                    GridRow {
+                        Text("推論時間").foregroundStyle(.secondary)
+                        Text(String(format: "%.1f ms", m.inferenceMs))
+                            .foregroundStyle(latencyColor(m))
+                            .monospacedDigit()
+                        Text("ブロック予算").foregroundStyle(.secondary)
+                        Text(String(format: "%.1f ms", m.blockBudgetMs))
+                            .monospacedDigit()
+                    }
+                    GridRow {
+                        Text("コールバック時間").foregroundStyle(.secondary)
+                        Text(String(format: "%.1f ms", m.blockMs))
+                            .monospacedDigit()
+                        Text("推論エラー").foregroundStyle(.secondary)
+                        Text("\(m.errorCount)")
+                            .monospacedDigit()
+                            .foregroundStyle(m.errorCount > 0 ? .red : .primary)
+                    }
+                    GridRow {
+                        Text("入力 under/overflow").foregroundStyle(.secondary)
+                        Text("\(m.inputUnderflow) / \(m.inputOverflow)")
+                            .monospacedDigit()
+                            .foregroundStyle(
+                                (m.inputUnderflow + m.inputOverflow) > 0 ? .orange : .primary)
+                        Text("出力 under/overflow").foregroundStyle(.secondary)
+                        Text("\(m.outputUnderflow) / \(m.outputOverflow)")
+                            .monospacedDigit()
+                            .foregroundStyle(
+                                (m.outputUnderflow + m.outputOverflow) > 0 ? .orange : .primary)
+                    }
+                    GridRow {
+                        Text("入力デバイス").foregroundStyle(.secondary)
+                        Text(m.inputDeviceName.isEmpty ? "—" : m.inputDeviceName)
+                            .lineLimit(1).truncationMode(.middle)
+                        Text("出力デバイス").foregroundStyle(.secondary)
+                        Text(m.outputDeviceName.isEmpty ? "—" : m.outputDeviceName)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                .font(.caption)
+
+                if m.latencyHealth == .critical {
+                    Label(
+                        "推論が間に合っていません。Block(秒) を大きく、軽い F0 手法 (fcpe/pm)、Protect を下げる、GPU 有効化などを検討してください。",
+                        systemImage: "bolt.slash.fill")
+                        .font(.caption).foregroundStyle(.red)
+                } else if m.latencyHealth == .warn {
+                    Label(
+                        "推論時間がブロック予算に迫っています。負荷が上がると途切れる可能性があります。",
+                        systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.yellow)
+                }
+                if m.totalUnderOverflow >= 5 {
+                    Label(
+                        "sounddevice が under/overrun を検出しています。サンプルレートを下げる、Block(秒) を大きく、他の重いアプリを閉じる等を試してください。",
+                        systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private func latencyColor(_ m: RealtimeMetrics) -> Color {
+        switch m.latencyHealth {
+        case .ok: return .primary
+        case .warn: return .yellow
+        case .critical: return .red
+        case .unknown: return .secondary
+        }
+    }
+
+    /// Scrollable timeline of session events. Collapsed by default; stays
+    /// visible after Stop so the user can inspect what happened.
+    private var eventLogCard: some View {
+        DisclosureGroup(isExpanded: $eventLogExpanded) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(bridge.realtimeEvents.reversed()) { ev in
+                        HStack(alignment: .top, spacing: 6) {
+                            Text(Self.logTimeFormatter.string(from: ev.timestamp))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 90, alignment: .leading)
+                            Text(ev.kind)
+                                .font(.caption2).bold()
+                                .foregroundStyle(levelColor(ev.level))
+                                .frame(width: 110, alignment: .leading)
+                            Text(ev.message)
+                                .font(.caption2)
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.vertical, 1)
+                    }
+                }
+                .padding(6)
+            }
+            .frame(maxHeight: 180)
+            .background(.secondary.opacity(0.08), in: .rect(cornerRadius: 6))
+        } label: {
+            HStack {
+                Text("イベントログ (\(bridge.realtimeEvents.count))")
+                    .font(.subheadline).bold()
+                Spacer()
+                if !bridge.realtimeEvents.isEmpty {
+                    Button("クリア") { bridge.resetRealtimeDiagnostics() }
+                        .buttonStyle(.borderless).font(.caption)
+                }
+            }
+        }
+        .padding(10)
+        .background(.thinMaterial, in: .rect(cornerRadius: 8))
+    }
+
+    private func levelColor(_ l: String) -> Color {
+        switch l {
+        case "error": return .red
+        case "warn":  return .orange
+        default:      return .secondary
+        }
+    }
+
     // MARK: - RPC actions
 
     private func refreshDevices() async {
@@ -218,6 +482,10 @@ struct RealtimeVCView: View {
 
     private func start() async {
         errorMsg = nil
+        bridge.resetRealtimeDiagnostics()
+        bridge.appendRealtimeEvent(
+            level: "info", kind: "client",
+            message: "ユーザーが開始をリクエスト (model=\(selectedModel), f0=\(f0Method))")
         let modelsPath = (bridge.initialInfo?["paths"]?["weight_root"]?.stringValue ?? "")
         let pthPath = modelsPath.isEmpty ? selectedModel : modelsPath + "/" + selectedModel
         var params: [String: JSONValue] = [
@@ -241,6 +509,9 @@ struct RealtimeVCView: View {
                 let sample_rate: Int?
                 let model_sr: Int?
                 let error: String?
+                let input_device_name: String?
+                let output_device_name: String?
+                let block_time_ms: Double?
             }
             let r: R = try await bridge.call(
                 "realtime_start",
@@ -248,16 +519,33 @@ struct RealtimeVCView: View {
                 timeout: 60)
             if r.status == "success" {
                 isRunning = true
-                lastInfo = "稼働中 — 出力 \(r.sample_rate ?? 0) Hz / モデル \(r.model_sr ?? 0) Hz"
+                var parts: [String] = []
+                parts.append("稼働中")
+                parts.append("出力 \(r.sample_rate ?? 0) Hz")
+                parts.append("モデル \(r.model_sr ?? 0) Hz")
+                if let name = r.input_device_name, !name.isEmpty {
+                    parts.append("in: \(name)")
+                }
+                if let name = r.output_device_name, !name.isEmpty {
+                    parts.append("out: \(name)")
+                }
+                lastInfo = parts.joined(separator: " — ")
             } else {
                 errorMsg = r.error ?? "開始失敗"
+                bridge.appendRealtimeEvent(
+                    level: "error", kind: "client",
+                    message: r.error ?? "開始失敗 (不明)")
             }
         } catch {
             errorMsg = error.localizedDescription
+            bridge.appendRealtimeEvent(
+                level: "error", kind: "client", message: error.localizedDescription)
         }
     }
 
     private func stop() async {
+        bridge.appendRealtimeEvent(
+            level: "info", kind: "client", message: "ユーザーが停止をリクエスト")
         do {
             _ = try await bridge.callRaw(
                 "realtime_stop",
