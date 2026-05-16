@@ -9,7 +9,7 @@ enum AppNotification {
         UNUserNotificationCenter.current().requestAuthorization(
             options: [.alert, .sound]
         ) { granted, _ in
-            authorized = granted
+            DispatchQueue.main.async { authorized = granted }
         }
     }
 
