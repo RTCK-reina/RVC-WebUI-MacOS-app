@@ -6,6 +6,34 @@ from typing import Tuple
 logger = logging.getLogger(__name__)
 logging.getLogger("numba").setLevel(logging.WARNING)
 
+
+def _check_cancel(hparams) -> None:
+    """Co-operative cancellation for long-running training.
+
+    rpc_server's ``_cancel_task(force=True)`` ultimately SIGKILLs our
+    process group, but PyTorch C extensions can swallow SIGTERM for
+    seconds at a time. As a second channel, the cancel path also touches
+    ``hparams.cancel_sentinel`` — we poll that file at epoch and every
+    ~50 batches and ``sys.exit(130)`` if it appears, cutting the
+    perceived stop latency without waiting for signals to land.
+
+    Called with ``hparams`` (not a module global) so ``mp.Process``
+    children observe the same sentinel path as the parent: hparams is
+    pickled across the spawn boundary, module-level globals are not.
+    """
+    path = getattr(hparams, "cancel_sentinel", None)
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            logger.info("cancel sentinel observed: %s — exiting", path)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            sys.exit(130)
+    except OSError:
+        # stat failed (fs race); ignore and try again next tick.
+        pass
+
 now_dir = os.getcwd()
 sys.path.append(os.path.join(now_dir))
 # train.py lives at infer/modules/train/train.py; walk up 3 dirs to reach the
@@ -372,6 +400,7 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
 
     cache = []
     for epoch in range(epoch_str, hps.train.epochs + 1):
+        _check_cancel(hps)
         if rank == 0:
             train_and_evaluate(
                 rank,
@@ -526,6 +555,10 @@ def train_and_evaluate(
     # 非連続になるため、accumulation 判定には使用しない。
     iter_idx = 0
     for batch_idx, info in data_iterator:
+        # Every ~50 batches, re-check the cancel sentinel. Skipping the
+        # very first iteration keeps the happy path free of an fs stat.
+        if iter_idx and iter_idx % 50 == 0:
+            _check_cancel(hps)
         # Data
         ## Unpack
         pitch = pitchf = None

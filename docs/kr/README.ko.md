@@ -63,7 +63,8 @@ Intel Mac은 **지원하지 않습니다** — 번들된 PyTorch는 ARM64 전용
 
 ```bash
 # 전제: Homebrew, Xcode CLT, Miniforge/conda
-brew install xcodegen conda-pack
+brew install xcodegen
+conda install -n base -c conda-forge conda-pack
 
 # 1. 클론
 git clone https://github.com/RTCKPRO/RVC-WebUI-MacOS.git
@@ -77,7 +78,10 @@ conda activate rvc
 python tools/test_rpc.py
 # 예상: "ready" 알림 → initialize 응답 → 매초 resource_stats 알림
 
-# 4. 전체 .app 번들 빌드
+# 4. HuggingFace에서 모델 에셋 다운로드 (hubert / rmvpe / pretrained_v2 / uvr5_weights, 약 2 GB)
+./tools/download_assets.sh --all
+
+# 5. 전체 .app 번들 빌드
 ./build_app.sh
 # 결과물: build/RVC-WebUI.app  (PyTorch와 모든 모델 포함 약 4 GB)
 ```

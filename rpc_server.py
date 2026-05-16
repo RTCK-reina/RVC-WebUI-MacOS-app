@@ -169,6 +169,14 @@ class Task:
         self.task_id = task_id
         self.cancel_event = threading.Event()
         self.started_at = time.time()
+        # Set by _cancel_task(force=True); consumed by _tail_log_until_done
+        # to skip the SIGTERM grace period and go straight to SIGKILL.
+        self.force_kill_requested: bool = False
+        # Optional filesystem sentinel. When cancel fires we touch this
+        # path so long-running subprocesses (e.g. train.py) can poll for
+        # it and self-exit at the next checkpoint — covers the case
+        # where SIGTERM is swallowed by a PyTorch C extension.
+        self.sentinel_path: Optional[Path] = None
 
 
 _tasks: Dict[str, Task] = {}
@@ -187,17 +195,38 @@ def _unregister_task(task_id: str) -> None:
         _tasks.pop(task_id, None)
 
 
-def _cancel_task(task_id: str) -> bool:
+def _cancel_task(task_id: str, force: bool = False) -> bool:
     """Cancel a task and all its children (prefix match).
 
     train_all registers sub-stages as "{parent_id}_preprocess", etc.
     Cancelling the parent ID cascades to all sub-stages.
+
+    The sentinel file at ``task.sentinel_path`` (when set) is touched
+    on **every** cancel — both soft and force — because the sentinel is
+    an orthogonal, always-useful self-exit signal for a co-operating
+    subprocess: there's no harm in offering a clean shutdown path even
+    when we haven't escalated to SIGKILL yet.
+
+    When ``force`` is True, we additionally set ``force_kill_requested``
+    on every matching task so the tail-log loop skips its SIGTERM grace
+    period and goes straight to SIGKILL — used by the UI's "strong stop"
+    path when a plain cancel doesn't take effect within a couple of
+    seconds.
     """
     cancelled_any = False
     with _tasks_lock:
         for tid, t in _tasks.items():
             if tid == task_id or tid.startswith(task_id + "_"):
+                if force:
+                    t.force_kill_requested = True
                 t.cancel_event.set()
+                sentinel = getattr(t, "sentinel_path", None)
+                if sentinel is not None:
+                    try:
+                        sentinel.parent.mkdir(parents=True, exist_ok=True)
+                        sentinel.touch(exist_ok=True)
+                    except OSError:
+                        pass
                 cancelled_any = True
     return cancelled_any
 
@@ -541,7 +570,12 @@ def rpc_vc_single(params: dict) -> dict:
 
         emit_progress(task_id, 90, "Saving output", "inference")
         tgt_sr, audio_opt = opt
-        save_audio(output_path, audio_opt, tgt_sr, f32=True, format=fmt)
+        # audio_opt is already int16-scale (infer/modules/vc/modules.py: VC.vc_single
+        # applies .astype(np.int16)).
+        # f32=True would cast int16 values into a float32 IEEE WAV where ±1.0 is full
+        # scale — the ±32440 values then explode into 32440× overgain and clip hard
+        # in every downstream player / FLAC re-encode. Keep f32=False for int16 PCM.
+        save_audio(output_path, audio_opt, tgt_sr, f32=False, format=fmt)
         emit_progress(task_id, 100, "Done", "inference")
 
         return {
@@ -608,7 +642,8 @@ def rpc_vc_multi(params: dict) -> dict:
                 model_stem = Path(sid).stem if sid else "model"
                 out_name = f"{Path(path).stem}_{model_stem}.{fmt}"
                 out_path = str(Path(out_root) / out_name)
-                save_audio(out_path, audio_opt, tgt_sr, f32=True, format=fmt)
+                # See rpc_vc_single above: audio_opt is int16-scale, so f32=False.
+                save_audio(out_path, audio_opt, tgt_sr, f32=False, format=fmt)
                 results.append({"input": path, "output": out_path, "info": info})
             else:
                 results.append({"input": path, "output": None, "info": info})
@@ -1146,8 +1181,7 @@ class _RealtimeVC:
                 F.conv1d(conv_input ** 2,
                          torch.ones(1, 1, self.sola_buffer_frame,
                                     device=self.device_str)) + 1e-8)
-            _, sola_offset = torch.max(cor_nom[0, 0] / cor_den[0, 0])
-            sola_offset = sola_offset.item()
+            sola_offset = torch.argmax(cor_nom[0, 0] / cor_den[0, 0]).item()
             infer_wav = infer_wav[sola_offset:]
             infer_wav[:self.sola_buffer_frame] *= self.fade_in_window
             infer_wav[:self.sola_buffer_frame] += self.sola_buffer * self.fade_out_window
@@ -1388,7 +1422,8 @@ def rpc_realtime_update_params(params: dict) -> dict:
 
 def rpc_cancel(params: dict) -> dict:
     tid = params.get("task_id", "")
-    return {"cancelled": _cancel_task(tid)}
+    force = bool(params.get("force", False))
+    return {"cancelled": _cancel_task(tid, force=force)}
 
 
 def rpc_shutdown(params: dict) -> dict:

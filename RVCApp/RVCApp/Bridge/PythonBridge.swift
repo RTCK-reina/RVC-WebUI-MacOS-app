@@ -23,6 +23,24 @@ enum PythonBridgeError: Error, LocalizedError {
     }
 }
 
+/// Outcome of a staged cancel attempt (see `PythonBridge.cancelTask`).
+/// Exposed so the UI can distinguish "backend reacted cleanly" from
+/// "we had to SIGKILL the whole backend to recover" from "everything
+/// we tried failed and the user needs to do something".
+enum CancelOutcome: Equatable {
+    /// Soft cancel succeeded within the first timeout window.
+    case graceful
+    /// Soft cancel timed out; `force=true` retry succeeded.
+    case forced
+    /// Both cancels timed out; the Python backend was SIGKILLed and
+    /// successfully relaunched.
+    case restarted
+    /// Both cancels timed out AND the relaunch also failed — the
+    /// backend is currently down. The reason (as reported by the
+    /// relaunch error) is included so the UI can surface it.
+    case restartFailed(String)
+}
+
 /// Owns the Python subprocess, owns the stdin/stdout pipes, and multiplexes
 /// concurrent RPC calls over a single pipe pair. `@MainActor` because every
 /// published property drives SwiftUI directly.
@@ -89,6 +107,17 @@ final class PythonBridge: ObservableObject {
     private var nextId: Int = 1
     private var pendingRequests: [Int: CheckedContinuation<JSONValue, Error>] = [:]
 
+    /// Arguments passed to the last successful `start()`. Retained so
+    /// `hardRestart()` can re-launch with the same configuration after a
+    /// stuck-backend SIGKILL recovery.
+    private struct StartArgs {
+        let pythonExec: String
+        let serverScript: String
+        let baseDir: String
+        let userDir: String
+    }
+    private var lastStartArgs: StartArgs?
+
     /// Accumulates partial stdout data — Python writes line-delimited JSON but
     /// pipe reads may split lines.
     private var stdoutBuffer = Data()
@@ -118,6 +147,15 @@ final class PythonBridge: ObservableObject {
             log("=== start() skipped — already running")
             return
         }
+
+        // Remember args so hardRestart() can re-launch with the same
+        // configuration after a stuck-backend kill.
+        self.lastStartArgs = StartArgs(
+            pythonExec: pythonExec,
+            serverScript: serverScript,
+            baseDir: baseDir,
+            userDir: userDir,
+        )
 
         openLogFile()
         log("=== start() called")
@@ -243,6 +281,133 @@ final class PythonBridge: ObservableObject {
         }
         process = nil
         _backendPID = 0
+    }
+
+    /// Cancel a running backend task with staged escalation:
+    ///   1. Soft cancel (backend's default SIGTERM → 3s grace → SIGKILL).
+    ///      Bounded by `softTimeout` so the UI does not hang if the
+    ///      cancel RPC itself gets stuck behind the blocking executor.
+    ///   2. If the soft cancel times out, re-send with `force=true`
+    ///      which instructs the backend to skip the SIGTERM grace and
+    ///      SIGKILL the subprocess group immediately (see
+    ///      `_cancel_task(force=True)` in rpc_server.py).
+    ///   3. If the force cancel also times out, the backend itself is
+    ///      stuck — SIGKILL the whole Python process and relaunch.
+    ///
+    /// Returns a `CancelOutcome` so the UI can surface the right message
+    /// (e.g. "stopped" vs "backend restarted").
+    func cancelTask(
+        _ taskID: String,
+        softTimeout: TimeInterval = 2.0,
+        forceTimeout: TimeInterval = 1.0,
+    ) async -> CancelOutcome {
+        // Stage 1: polite cancel.
+        let softParams = JSONValue.object(["task_id": .string(taskID)])
+        do {
+            _ = try await callRaw("cancel", params: softParams, timeout: softTimeout)
+            return .graceful
+        } catch PythonBridgeError.timeout {
+            log("=== cancelTask: soft cancel timed out, escalating to force")
+        } catch {
+            // Non-timeout errors (e.g. already-dead backend) also escalate
+            // — we still want to make sure the task stops if possible.
+            log("=== cancelTask: soft cancel error \(error), escalating to force")
+        }
+
+        // Stage 2: force cancel (backend skips SIGTERM grace).
+        let forceParams = JSONValue.object([
+            "task_id": .string(taskID),
+            "force": .bool(true),
+        ])
+        do {
+            _ = try await callRaw("cancel", params: forceParams, timeout: forceTimeout)
+            return .forced
+        } catch PythonBridgeError.timeout {
+            log("=== cancelTask: force cancel timed out, hardRestart()ing backend")
+        } catch {
+            log("=== cancelTask: force cancel error \(error), hardRestart()ing backend")
+        }
+
+        // Stage 3: the backend itself is wedged. Nuke and relaunch.
+        let restartError = await hardRestart()
+        if let msg = restartError {
+            return .restartFailed(msg)
+        }
+        return .restarted
+    }
+
+    /// SIGKILL the Python backend and relaunch it with the same args.
+    /// Last-resort recovery when even `cancel` RPCs are wedged. Clears
+    /// all pending RPC continuations (via the terminationHandler path).
+    ///
+    /// Returns ``nil`` on success, or a short error message on failure —
+    /// callers should surface the message to the user since the backend
+    /// is down until `start()` succeeds.
+    @discardableResult
+    func hardRestart() async -> String? {
+        guard let args = lastStartArgs else {
+            let msg = "no cached start args, cannot relaunch"
+            log("=== hardRestart: \(msg)")
+            killSync()
+            process = nil
+            _backendPID = 0
+            isReady = false
+            isAlive = false
+            activeProgress.removeAll()
+            cancelledTaskIDs.removeAll()
+            return msg
+        }
+        log("=== hardRestart: killing backend pid=\(_backendPID)")
+        killSync()
+        // Wait for the terminationHandler to drain pendingRequests before
+        // relaunching. The goal is "no continuations belonging to the
+        // old process leak into the new one", so observe that directly:
+        // handleTermination() clears pendingRequests and sets isReady=false.
+        // Drop out early as soon as those post-conditions hold.
+        let waitDeadline = Date().addingTimeInterval(1.5)
+        while Date() < waitDeadline {
+            let stillRunning = process?.isRunning == true
+            if !stillRunning && pendingRequests.isEmpty {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        // Belt-and-suspenders: if terminationHandler never fired (e.g.
+        // the process object was never live enough to register it),
+        // fail any leftover continuations ourselves so they don't hang.
+        if !pendingRequests.isEmpty {
+            let leftover = pendingRequests
+            pendingRequests.removeAll()
+            for (_, cont) in leftover {
+                cont.resume(throwing: PythonBridgeError.processExited(-1))
+            }
+        }
+        process = nil
+        _backendPID = 0
+        isReady = false
+        isAlive = false
+        // Clear task-side state so the relaunched backend's progress
+        // notifications are not suppressed by stale cancel records.
+        // Without this, cancelledTaskIDs can grow unbounded and, if a
+        // future task_id shares a prefix with a dead one, its progress
+        // updates get silently dropped.
+        activeProgress.removeAll()
+        cancelledTaskIDs.removeAll()
+        do {
+            try await start(
+                pythonExec: args.pythonExec,
+                serverScript: args.serverScript,
+                baseDir: args.baseDir,
+                userDir: args.userDir,
+            )
+            log("=== hardRestart: relaunch succeeded")
+            return nil
+        } catch {
+            let msg = error.localizedDescription
+            log("=== hardRestart: relaunch FAILED \(error)")
+            lastError = "Backend restart failed: \(msg)"
+            return msg
+        }
     }
 
     /// Remove a task and its children (prefix match) from the active progress

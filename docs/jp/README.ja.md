@@ -63,7 +63,8 @@ Intel Mac は **非対応** です — バンドル済み PyTorch は ARM64 専�
 
 ```bash
 # 前提: Homebrew、Xcode CLT、Miniforge/conda
-brew install xcodegen conda-pack
+brew install xcodegen
+conda install -n base -c conda-forge conda-pack
 
 # 1. クローン
 git clone https://github.com/RTCKPRO/RVC-WebUI-MacOS.git
@@ -77,7 +78,10 @@ conda activate rvc
 python tools/test_rpc.py
 # 期待値: "ready" 通知 → initialize 応答 → 1 秒毎に resource_stats 通知
 
-# 4. フルの .app バンドルをビルド
+# 4. HuggingFace からモデルアセットを取得（hubert / rmvpe / pretrained_v2 / uvr5_weights、約 2 GB）
+./tools/download_assets.sh --all
+
+# 5. フルの .app バンドルをビルド
 ./build_app.sh
 # 生成物: build/RVC-WebUI.app  （PyTorch と全モデルを含めて約 4 GB）
 ```

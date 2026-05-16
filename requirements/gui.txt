@@ -1,0 +1,23 @@
+# macOS GUI requirements. Install PyTorch from pytorch.org first:
+#   pip install torch torchvision torchaudio
+# MPS (Apple Silicon) support requires torch >= 2.0.
+einops
+fairseq
+gin
+gin_config
+librosa
+local_attention
+matplotlib
+numpy==1.23.5
+praat-parselmouth
+pyworld
+PyYAML
+resampy
+scikit_learn
+scipy
+tensorboard
+tqdm
+FreeSimpleGUI
+sounddevice
+noisereduce
+torchfcpe
