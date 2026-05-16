@@ -42,6 +42,36 @@ final class PythonBridge: ObservableObject {
     @Published private(set) var backendStatus: String = "starting"
     @Published private(set) var initialInfo: JSONValue?
 
+    /// Per-block diagnostics published by the backend during a realtime VC
+    /// session (~10Hz). Drives the meter/badge/metrics cards.
+    @Published private(set) var realtimeMetrics: RealtimeMetrics = .idle
+    /// Timeline of notable events for the realtime session. Capped at
+    /// `realtimeEventsMax`; older entries drop off.
+    @Published private(set) var realtimeEvents: [RealtimeEvent] = []
+    private let realtimeEventsMax = 200
+
+    /// Clear realtime diagnostics state. Called by the Realtime view when a
+    /// new session starts so stale counters/events don't bleed across runs.
+    func resetRealtimeDiagnostics() {
+        realtimeMetrics = .idle
+        realtimeEvents.removeAll()
+    }
+
+    /// Append a client-originated event (e.g. user pressed Start/Stop) to the
+    /// realtime timeline. Backend-originated events arrive via notification.
+    func appendRealtimeEvent(level: String, kind: String, message: String) {
+        let ev = RealtimeEvent(
+            timestamp: Date(), level: level, kind: kind, message: message)
+        realtimeEvents.append(ev)
+        trimRealtimeEvents()
+    }
+
+    private func trimRealtimeEvents() {
+        if realtimeEvents.count > realtimeEventsMax {
+            realtimeEvents.removeFirst(realtimeEvents.count - realtimeEventsMax)
+        }
+    }
+
     // Most recent model lists (updated by callers via list_models / list_indices).
     @Published var models: [String] = []
     @Published var indices: [String] = []
@@ -397,7 +427,16 @@ final class PythonBridge: ObservableObject {
         case "realtime_error":
             if let msg = params["error"]?.stringValue {
                 self.lastError = "リアルタイムVCエラー: \(msg)"
+                self.realtimeEvents.append(RealtimeEvent(
+                    timestamp: Date(), level: "error",
+                    kind: "callback_error", message: msg))
+                trimRealtimeEvents()
             }
+        case "realtime_metrics":
+            self.realtimeMetrics = RealtimeMetrics(fromParams: params)
+        case "realtime_event":
+            self.realtimeEvents.append(RealtimeEvent(fromParams: params))
+            trimRealtimeEvents()
         default:
             break
         }

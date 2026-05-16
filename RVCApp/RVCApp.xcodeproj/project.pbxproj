@@ -12,6 +12,7 @@
 		1117B7784F8BDED84F8D8457 /* BatchInferenceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 194ED43F08E7547E95A3C320 /* BatchInferenceView.swift */; };
 		234519F80077D8D152B4E5C6 /* TaskProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3FC1385F99E7AEB33F617F /* TaskProgress.swift */; };
 		2A5A9050EC560DC73ACD7959 /* RealtimeVCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41752C4D63E4AA1801F684F4 /* RealtimeVCView.swift */; };
+		600092728ABCD50A4738E11E /* RealtimeMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22BB0C9E2405F2F42B9D2B0 /* RealtimeMetrics.swift */; };
 		6987F297E333C6E2133DE34D /* AudioPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 363811336D7F8CF49189E52C /* AudioPlayerView.swift */; };
 		6E6768A2AE9A0802EADD26E4 /* SingleInferenceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37915BFC83F4D65835252BC1 /* SingleInferenceView.swift */; };
 		7136F7D58AD3C31A1C12D8C1 /* PythonBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBB279F4BCC24F27D2A7B06 /* PythonBridge.swift */; };
@@ -44,6 +45,7 @@
 		A27005ECB67927E719605B20 /* ProgressBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressBarView.swift; sourceTree = "<group>"; };
 		AE3FC1385F99E7AEB33F617F /* TaskProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskProgress.swift; sourceTree = "<group>"; };
 		CCEE60658A43D30AFB5F6A3F /* ModelManagementViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManagementViews.swift; sourceTree = "<group>"; };
+		D22BB0C9E2405F2F42B9D2B0 /* RealtimeMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeMetrics.swift; sourceTree = "<group>"; };
 		D868D1FD6FF655167A4D3411 /* JSONRPCModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONRPCModels.swift; sourceTree = "<group>"; };
 		E71BECE5858BFE921FF3E19F /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		F0D5BFA2A4869A13A49887D1 /* TrainingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingView.swift; sourceTree = "<group>"; };
@@ -133,6 +135,7 @@
 				62F003768F7DBB0791584740 /* AppNotification.swift */,
 				8DCAFCB1E2BBF2A215B3C2EB /* AppState.swift */,
 				D868D1FD6FF655167A4D3411 /* JSONRPCModels.swift */,
+				D22BB0C9E2405F2F42B9D2B0 /* RealtimeMetrics.swift */,
 				85B2801DCF94E3DF8293C83A /* ResourceStats.swift */,
 				AE3FC1385F99E7AEB33F617F /* TaskProgress.swift */,
 			);
@@ -232,6 +235,7 @@
 				FA5E46CED38CAFEE953604FF /* ProgressBarView.swift in Sources */,
 				7136F7D58AD3C31A1C12D8C1 /* PythonBridge.swift in Sources */,
 				A8E3A409D2CE8660F8C9F04F /* RVCAppMain.swift in Sources */,
+				600092728ABCD50A4738E11E /* RealtimeMetrics.swift in Sources */,
 				2A5A9050EC560DC73ACD7959 /* RealtimeVCView.swift in Sources */,
 				9CAA86D285586C9A458CB8A9 /* ResourceStats.swift in Sources */,
 				928CB3F63015099B2A01726E /* SeparationView.swift in Sources */,

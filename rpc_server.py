@@ -959,6 +959,30 @@ class _RealtimeVC:
         self._error_count = 0
         self._error_notified = False
 
+        # --- Diagnostics state (consumed by the Swift UI via realtime_metrics).
+        # Peaks accumulate between emits; RMS/latency are block-local snapshots.
+        self._max_input_peak = 0.0
+        self._max_output_peak = 0.0
+        self._last_inference_ms = 0.0
+        self._last_block_ms = 0.0
+        self._last_input_rms_db = -90.0
+        self._last_output_rms_db = -90.0
+        self._last_is_gated = False
+        self._last_emit_time = time.time()
+        self._cb_input_underflow = 0
+        self._cb_input_overflow = 0
+        self._cb_output_underflow = 0
+        self._cb_output_overflow = 0
+        self._cb_priming_output = 0
+        self._input_device_name = "unknown"
+        self._output_device_name = "unknown"
+        self._input_device_index = (
+            int(input_device) if isinstance(input_device, int) and input_device >= 0 else -1
+        )
+        self._output_device_index = (
+            int(output_device) if isinstance(output_device, int) and output_device >= 0 else -1
+        )
+
         zc = samplerate // 100
         self.zc = zc
         self.block_frame = int(np.round(block_time * samplerate / zc)) * zc
@@ -1006,11 +1030,71 @@ class _RealtimeVC:
         )
         self.stream.start()
 
+        # Resolve the device indices sounddevice actually bound to. When the
+        # caller passes None we need this round-trip to tell the UI which
+        # device the host API picked — otherwise "自動" is opaque.
+        try:
+            stream_dev = self.stream.device
+            if isinstance(stream_dev, (tuple, list)) and len(stream_dev) >= 2:
+                in_idx, out_idx = stream_dev[0], stream_dev[1]
+            else:
+                in_idx, out_idx = None, None
+            if in_idx is not None and in_idx >= 0:
+                self._input_device_name = sd.query_devices(in_idx).get("name", "unknown")
+                self._input_device_index = int(in_idx)
+            if out_idx is not None and out_idx >= 0:
+                self._output_device_name = sd.query_devices(out_idx).get("name", "unknown")
+                self._output_device_index = int(out_idx)
+        except Exception:
+            logger.exception("failed to resolve active device names")
+
+        try:
+            send_notification("realtime_event", {
+                "timestamp": time.time(),
+                "level": "info",
+                "kind": "started",
+                "message": (
+                    f"started — in:{self._input_device_name} "
+                    f"out:{self._output_device_name} "
+                    f"sr:{samplerate} block:{block_time:.3f}s "
+                    f"thresh:{threshold}dB f0:{f0method}"
+                ),
+            })
+        except Exception:
+            pass
+
     def _audio_callback(self, indata, outdata, frames, times, status):
         import librosa
+        _cb_start = time.perf_counter()
+
+        # CallbackFlags: bit-set sounddevice passes when the host API detects
+        # an under/overrun. Cheap to read and invaluable for diagnosing "why
+        # is the output choppy" — we surface cumulative counts to the UI.
+        if status:
+            try:
+                if status.input_underflow:  self._cb_input_underflow  += 1
+                if status.input_overflow:   self._cb_input_overflow   += 1
+                if status.output_underflow: self._cb_output_underflow += 1
+                if status.output_overflow:  self._cb_output_overflow  += 1
+                if getattr(status, "priming_output", False):
+                    self._cb_priming_output += 1
+            except Exception:
+                pass
+
+        # Pre-gate input peak/RMS — reflects what the microphone actually delivered.
+        try:
+            in_peak = float(np.abs(indata).max()) if indata.size else 0.0
+            if in_peak > self._max_input_peak:
+                self._max_input_peak = in_peak
+            in_rms_lin = float(np.sqrt(np.mean(indata * indata) + 1e-12))
+            self._last_input_rms_db = 20.0 * float(np.log10(in_rms_lin + 1e-7))
+        except Exception:
+            pass
+
         try:
             indata_mono = librosa.to_mono(indata.T)
             # Noise gate
+            gated_all = False
             if self.threshold > -60:
                 indata_mono = np.append(self.rms_buffer, indata_mono)
                 rms = librosa.feature.rms(
@@ -1024,6 +1108,10 @@ class _RealtimeVC:
                     if db_thresh[i]:
                         indata_mono[i * self.zc:(i + 1) * self.zc] = 0
                 indata_mono = indata_mono[self.zc // 2:]
+                # True only when the gate zeroed every sub-block — lets the UI
+                # distinguish "ゲート作動で意図的に無音" from "マイクが何も拾ってない".
+                gated_all = bool(db_thresh.all())
+            self._last_is_gated = gated_all
 
             # Shift input buffer
             self.input_wav[:-self.block_frame] = self.input_wav[self.block_frame:].clone()
@@ -1037,6 +1125,7 @@ class _RealtimeVC:
                 self.resampler(self.input_wav[-indata_mono.shape[0] - 2 * self.zc:])[160:])
 
             # RVC inference
+            _infer_start = time.perf_counter()
             infer_wav = self.rvc.infer(
                 self.input_wav_res,
                 self.block_frame_16k,
@@ -1047,6 +1136,7 @@ class _RealtimeVC:
             )
             if self.resampler2 is not None:
                 infer_wav = self.resampler2(infer_wav)
+            self._last_inference_ms = (time.perf_counter() - _infer_start) * 1000.0
 
             # SOLA crossfade
             conv_input = infer_wav[
@@ -1067,8 +1157,19 @@ class _RealtimeVC:
                 infer_wav[:self.block_frame]
                 .repeat(self.out_channels, 1).t().cpu().numpy())
             self._error_count = 0  # Reset on success.
+
+            # Post-render output peak/RMS.
+            try:
+                out_peak = float(np.abs(outdata).max()) if outdata.size else 0.0
+                if out_peak > self._max_output_peak:
+                    self._max_output_peak = out_peak
+                out_rms_lin = float(np.sqrt(np.mean(outdata * outdata) + 1e-12))
+                self._last_output_rms_db = 20.0 * float(np.log10(out_rms_lin + 1e-7))
+            except Exception:
+                pass
         except Exception as exc:
             outdata[:] = 0
+            self._last_output_rms_db = -90.0
             self._error_count += 1
             if self._error_count <= 3:
                 logger.exception("realtime callback error #%d", self._error_count)
@@ -1079,14 +1180,85 @@ class _RealtimeVC:
                         "error": str(exc),
                         "count": self._error_count,
                     })
+                    send_notification("realtime_event", {
+                        "timestamp": time.time(),
+                        "level": "error",
+                        "kind": "callback_error",
+                        "message": f"推論コールバック例外が連続発生: {exc}",
+                    })
                 except Exception:
                     pass
 
+        self._last_block_ms = (time.perf_counter() - _cb_start) * 1000.0
+
+        # Throttled emit (~10Hz) — send_notification hands off to a writer
+        # thread so the real-time callback just enqueues a dict.
+        now = time.time()
+        if (now - self._last_emit_time) >= 0.1:
+            self._emit_metrics(now)
+            self._last_emit_time = now
+
+    def _emit_metrics(self, now: float) -> None:
+        """Publish the latest diagnostics snapshot to the UI.
+
+        Called from the audio callback — keep it cheap. send_notification
+        just does Queue.put so no blocking I/O on the real-time thread.
+        Peak accumulators reset here so the UI sees per-emit max, not lifetime max.
+        """
+        def _safe_db(peak_lin: float) -> float:
+            return 20.0 * float(np.log10(max(peak_lin, 1e-7)))
+
+        params = {
+            "timestamp": now,
+            "input_rms_db": round(self._last_input_rms_db, 1),
+            "output_rms_db": round(self._last_output_rms_db, 1),
+            "input_peak_db": round(_safe_db(self._max_input_peak), 1),
+            "output_peak_db": round(_safe_db(self._max_output_peak), 1),
+            "input_clipped": bool(self._max_input_peak >= 0.999),
+            "output_clipped": bool(self._max_output_peak >= 0.999),
+            "is_gated": bool(self._last_is_gated),
+            "inference_ms": round(self._last_inference_ms, 2),
+            "block_ms": round(self._last_block_ms, 2),
+            "block_time_budget_ms": round(
+                self.block_frame / self.samplerate * 1000.0, 2),
+            "error_count": int(self._error_count),
+            "callback_flags": {
+                "input_underflow": int(self._cb_input_underflow),
+                "input_overflow": int(self._cb_input_overflow),
+                "output_underflow": int(self._cb_output_underflow),
+                "output_overflow": int(self._cb_output_overflow),
+                "priming_output": int(self._cb_priming_output),
+            },
+            "input_device_index": int(self._input_device_index),
+            "output_device_index": int(self._output_device_index),
+            "input_device_name": str(self._input_device_name),
+            "output_device_name": str(self._output_device_name),
+            "samplerate": int(self.samplerate),
+            "threshold_db": float(self.threshold),
+        }
+        try:
+            send_notification("realtime_metrics", params)
+        except Exception:
+            pass
+        self._max_input_peak = 0.0
+        self._max_output_peak = 0.0
+
     def stop(self):
         if self.stream is not None:
-            self.stream.abort()
-            self.stream.close()
-            self.stream = None
+            try:
+                self.stream.abort()
+                self.stream.close()
+            finally:
+                self.stream = None
+        try:
+            send_notification("realtime_event", {
+                "timestamp": time.time(),
+                "level": "info",
+                "kind": "stopped",
+                "message": "session stopped",
+            })
+        except Exception:
+            pass
 
 
 def rpc_realtime_start(params: dict) -> dict:
@@ -1169,6 +1341,11 @@ def rpc_realtime_start(params: dict) -> dict:
         "status": "success",
         "sample_rate": sample_rate,
         "model_sr": rvc_obj.tgt_sr,
+        "input_device_index": rt._input_device_index,
+        "output_device_index": rt._output_device_index,
+        "input_device_name": rt._input_device_name,
+        "output_device_name": rt._output_device_name,
+        "block_time_ms": round(rt.block_frame / sample_rate * 1000.0, 2),
     }
 
 
@@ -1186,12 +1363,26 @@ def rpc_realtime_update_params(params: dict) -> dict:
     rt = app_state.realtime
     if rt is None:
         return {"status": "not_running"}
+    updated = {}
     if "pitch" in params:
         rt.rvc.set_key(params["pitch"])
+        updated["pitch"] = params["pitch"]
     if "formant" in params:
         rt.rvc.set_formant(params["formant"])
+        updated["formant"] = params["formant"]
     if "index_rate" in params:
         rt.rvc.set_index_rate(params["index_rate"])
+        updated["index_rate"] = params["index_rate"]
+    if updated:
+        try:
+            send_notification("realtime_event", {
+                "timestamp": time.time(),
+                "level": "info",
+                "kind": "params_updated",
+                "message": "updated: " + ", ".join(f"{k}={v}" for k, v in updated.items()),
+            })
+        except Exception:
+            pass
     return {"status": "updated"}
 
 
