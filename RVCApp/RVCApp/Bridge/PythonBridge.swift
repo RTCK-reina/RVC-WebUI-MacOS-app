@@ -7,6 +7,7 @@ enum PythonBridgeError: Error, LocalizedError {
     case launchFailed(String)
     case processExited(Int32)
     case timeout
+    case writeFailed(String)
     case rpcError(JSONRPCError)
     case invalidResponse(String)
 
@@ -17,6 +18,7 @@ enum PythonBridgeError: Error, LocalizedError {
         case .processExited(let code):
             return "Python backend exited unexpectedly (code \(code))."
         case .timeout: return "Python backend did not respond in time."
+        case .writeFailed(let s): return "Failed to write to Python backend: \(s)"
         case .rpcError(let e): return "Backend error \(e.code): \(e.message)"
         case .invalidResponse(let s): return "Invalid backend response: \(s)"
         }
@@ -106,6 +108,7 @@ final class PythonBridge: ObservableObject {
 
     private var nextId: Int = 1
     private var pendingRequests: [Int: CheckedContinuation<JSONValue, Error>] = [:]
+    private var pendingTimeouts: [Int: Task<Void, Never>] = [:]
 
     /// Arguments passed to the last successful `start()`. Retained so
     /// `hardRestart()` can re-launch with the same configuration after a
@@ -157,6 +160,8 @@ final class PythonBridge: ObservableObject {
             userDir: userDir,
         )
 
+        stdoutBuffer.removeAll(keepingCapacity: true)
+        stderrTail = ""
         openLogFile()
         log("=== start() called")
         log("  python:   \(pythonExec)")
@@ -180,6 +185,9 @@ final class PythonBridge: ObservableObject {
         env["RVC_USER_DIR"] = userDir
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTORCH_ENABLE_MPS_FALLBACK"] = env["PYTORCH_ENABLE_MPS_FALLBACK"] ?? "1"
+        env["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] =
+            env["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] ?? "0.0"
         // Belt-and-braces: some macOS sandbox contexts scrub HOME; make sure
         // Python can find a writable temp/cache location for conda-packed libs.
         if env["HOME"] == nil {
@@ -225,6 +233,7 @@ final class PythonBridge: ObservableObject {
         do {
             try p.run()
         } catch {
+            cleanupProcessState(closeLog: true)
             throw PythonBridgeError.launchFailed(error.localizedDescription)
         }
         _backendPID = p.processIdentifier
@@ -235,22 +244,20 @@ final class PythonBridge: ObservableObject {
         do {
             try await waitForAlive(timeout: 20)
             log("=== got alive")
-        } catch {
-            log("=== never saw alive: \(error.localizedDescription)")
-            throw enrichLaunchError(error)
-        }
 
-        do {
             try await waitForReady(timeout: 120)
             log("=== got ready")
-        } catch {
-            log("=== never saw ready: \(error.localizedDescription)")
-            throw enrichLaunchError(error)
-        }
 
-        // Fetch initialization info.
-        let info: JSONValue = try await call("initialize", params: JSONValue.object([:]))
-        self.initialInfo = info
+            // Fetch initialization info.
+            let info: JSONValue = try await call("initialize", params: JSONValue.object([:]))
+            self.initialInfo = info
+        } catch {
+            log("=== startup failed: \(error.localizedDescription)")
+            let enriched = enrichLaunchError(error)
+            killSync()
+            cleanupProcessState(closeLog: true)
+            throw enriched
+        }
     }
 
     /// Wrap a timeout error with the tail of the Python stderr so users can
@@ -277,10 +284,9 @@ final class PythonBridge: ObservableObject {
         // Give it a moment to exit on its own, then terminate.
         try? await Task.sleep(nanoseconds: 500_000_000)
         if p.isRunning {
-            p.terminate()
+            killSync()
         }
-        process = nil
-        _backendPID = 0
+        cleanupProcessState(closeLog: true)
     }
 
     /// Cancel a running backend task with staged escalation:
@@ -465,6 +471,10 @@ final class PythonBridge: ObservableObject {
         params: JSONValue,
         timeout: TimeInterval = 300
     ) async throws -> JSONValue {
+        if let p = process, !p.isRunning {
+            handleTermination(code: p.terminationStatus)
+            throw PythonBridgeError.processExited(p.terminationStatus)
+        }
         guard process != nil, let stdin = stdinPipe else {
             throw PythonBridgeError.notLaunched
         }
@@ -475,25 +485,41 @@ final class PythonBridge: ObservableObject {
         let encoded = try JSONEncoder().encode(req)
         var payload = encoded
         payload.append(0x0A)  // newline
+        let writeHandle = stdin.fileHandleForWriting
 
-        return try await withThrowingTaskGroup(of: JSONValue.self) { group in
-            group.addTask { [weak self] in
-                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in
-                    Task { @MainActor [weak self] in
-                        self?.pendingRequests[id] = cont
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in
+                pendingRequests[id] = cont
+                do {
+                    try writeHandle.write(contentsOf: payload)
+                } catch {
+                    pendingRequests.removeValue(forKey: id)
+                    cont.resume(
+                        throwing: PythonBridgeError.writeFailed(error.localizedDescription))
+                    return
+                }
+
+                let nanos = UInt64(max(0, timeout) * 1_000_000_000)
+                pendingTimeouts[id] = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: nanos)
+                    guard !Task.isCancelled else { return }
+                    guard let self else { return }
+                    self.pendingTimeouts.removeValue(forKey: id)
+                    guard let pending = self.pendingRequests.removeValue(forKey: id) else {
+                        return
                     }
-                    try? stdin.fileHandleForWriting.write(contentsOf: payload)
+                    pending.resume(throwing: PythonBridgeError.timeout)
                 }
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw PythonBridgeError.timeout
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.pendingTimeouts.removeValue(forKey: id)?.cancel()
+                guard let pending = self.pendingRequests.removeValue(forKey: id) else {
+                    return
+                }
+                pending.resume(throwing: CancellationError())
             }
-            guard let result = try await group.next() else {
-                throw PythonBridgeError.invalidResponse("No response task produced a value")
-            }
-            group.cancelAll()
-            return result
         }
     }
 
@@ -527,6 +553,7 @@ final class PythonBridge: ObservableObject {
     }
 
     private func resolvePending(id: Int, env: JSONRPCEnvelope) {
+        pendingTimeouts.removeValue(forKey: id)?.cancel()
         guard let cont = pendingRequests.removeValue(forKey: id) else { return }
         if let err = env.error {
             cont.resume(throwing: PythonBridgeError.rpcError(err))
@@ -585,6 +612,7 @@ final class PythonBridge: ObservableObject {
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     self?.activeProgress.removeValue(forKey: id)
+                    self?.cancelledTaskIDs.remove(id)
                 }
             }
         case "shutting_down":
@@ -611,13 +639,23 @@ final class PythonBridge: ObservableObject {
 
     private func handleTermination(code: Int32) {
         self.isReady = false
+        self.isAlive = false
+        self.backendStatus = "exited"
         self.lastError = "Python backend exited with code \(code)"
         // Fail any pending requests.
+        let timeouts = pendingTimeouts
+        pendingTimeouts.removeAll()
+        for (_, task) in timeouts {
+            task.cancel()
+        }
         let pending = pendingRequests
         pendingRequests.removeAll()
         for (_, cont) in pending {
             cont.resume(throwing: PythonBridgeError.processExited(code))
         }
+        activeProgress.removeAll()
+        cancelledTaskIDs.removeAll()
+        cleanupProcessState(closeLog: true)
     }
 
     private func waitForReady(timeout: TimeInterval) async throws {
@@ -641,6 +679,7 @@ final class PythonBridge: ObservableObject {
     // MARK: - Logging
 
     private func openLogFile() {
+        closeLogFile()
         let fm = FileManager.default
         let libLogs = fm.urls(for: .libraryDirectory, in: .userDomainMask).first?
             .appendingPathComponent("Logs/RVC-Swift", isDirectory: true)
@@ -651,10 +690,32 @@ final class PythonBridge: ObservableObject {
             fm.createFile(atPath: url.path, contents: nil)
         }
         if let h = try? FileHandle(forWritingTo: url) {
-            try? h.seekToEnd()
+            _ = try? h.seekToEnd()
             logFileHandle = h
             let ts = ISO8601DateFormatter().string(from: Date())
             try? h.write(contentsOf: Data("\n--- \(ts) ---\n".utf8))
+        }
+    }
+
+    private func closeLogFile() {
+        try? logFileHandle?.close()
+        logFileHandle = nil
+    }
+
+    private func cleanupProcessState(closeLog: Bool = false) {
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        try? stdinPipe?.fileHandleForWriting.close()
+        try? stdoutPipe?.fileHandleForReading.close()
+        try? stderrPipe?.fileHandleForReading.close()
+        process = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+        stderrPipe = nil
+        stdoutBuffer.removeAll(keepingCapacity: true)
+        _backendPID = 0
+        if closeLog {
+            closeLogFile()
         }
     }
 

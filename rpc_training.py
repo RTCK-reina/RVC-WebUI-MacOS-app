@@ -56,7 +56,12 @@ def _exp_dir(config, exp_name: str) -> Path:
     return p
 
 
-def _spawn(cmd: list, cwd: str, log_path: Path) -> subprocess.Popen:
+def _spawn(
+    cmd: list,
+    cwd: str,
+    log_path: Path,
+    env_extra: Optional[dict] = None,
+) -> subprocess.Popen:
     """Start a subprocess, redirecting stdout+stderr to log_path.
 
     The log file descriptor is closed in the parent process right after
@@ -68,12 +73,16 @@ def _spawn(cmd: list, cwd: str, log_path: Path) -> subprocess.Popen:
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("exec: %s (log=%s)", " ".join(cmd), log_path)
+    env = os.environ.copy()
+    if env_extra:
+        env.update({str(k): str(v) for k, v in env_extra.items()})
     with open(log_path, "a", encoding="utf-8") as log_f:
         return subprocess.Popen(
             cmd,
             cwd=cwd,
             stdout=log_f,
             stderr=subprocess.STDOUT,
+            env=env,
             # Create a new process group so we can kill the entire tree
             # (train.py spawns mp.Process children that would otherwise
             # survive a plain p.terminate()).
@@ -366,6 +375,28 @@ def _train_percent_from_log(content: str) -> Optional[float]:
     return max(0.0, min(100.0, (last / total) * 100.0))
 
 
+def _gpu_backend(config) -> Optional[str]:
+    device = str(getattr(config, "device", "") or "")
+    if device == "mps":
+        return "mps"
+    if device.startswith("cuda"):
+        return "cuda"
+    return None
+
+
+def _require_gpu(params: dict, config) -> Optional[dict]:
+    if not bool(params.get("require_gpu", False)):
+        return None
+    backend = _gpu_backend(config)
+    if backend is not None:
+        return None
+    details = getattr(config, "mps_error", None)
+    error = "GPU training was requested, but no supported GPU backend is available."
+    if details:
+        error += f" MPS: {details}"
+    return {"status": "error", "error": error}
+
+
 def _count_percent(content: str, marker: str, total: int) -> Optional[float]:
     if total <= 0:
         return None
@@ -471,6 +502,9 @@ def rpc_extract_f0(params: dict, ctx):
     exp_dir = _exp_dir(config, exp_name)
     log_path = exp_dir / "extract_f0_feature.log"
     log_path.write_text("")
+
+    if (gpu_error := _require_gpu(params, config)) is not None:
+        return gpu_error
 
     task = register_task(task_id)
     status("training")
@@ -590,6 +624,9 @@ def rpc_train(params: dict, ctx):
     log_path = exp_dir / "train.log"
     log_path.write_text("")
 
+    if (gpu_error := _require_gpu(params, config)) is not None:
+        return gpu_error
+
     # Build filelist.txt from the preprocess/feature extraction outputs.
     try:
         _write_filelist(config, exp_dir, sr_name, if_f0, spk_id, version)
@@ -653,7 +690,12 @@ def rpc_train(params: dict, ctx):
             cmd += ["-g", gpus]
         # Training scripts resolve paths relative to cwd (logs/<exp>/...) — run
         # from the user_dir so logs/ points to the writable user logs dir.
-        proc = _spawn(cmd, cwd=str(config.user_dir), log_path=log_path)
+        proc = _spawn(
+            cmd,
+            cwd=str(config.user_dir),
+            log_path=log_path,
+            env_extra={"RVC_TRAIN_DEVICE": str(config.device)},
+        )
 
         # Configure the percent estimator with the total epoch for this run.
         _train_percent_from_log._total = total_epoch  # type: ignore

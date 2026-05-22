@@ -53,6 +53,7 @@ struct TrainingView: View {
     @AppStorage("train.ifSaveLatest") private var ifSaveLatest: Bool = true
     @AppStorage("train.ifCacheGpu") private var ifCacheGpu: Bool = false
     @AppStorage("train.ifSaveEveryWeights") private var ifSaveEveryWeights: Bool = true
+    @AppStorage("train.requireGPU") private var requireGPU: Bool = false
     @AppStorage("train.spkId") private var spkId: Double = 0
     @AppStorage("train.pretrainedG") private var pretrainedG: String = ""
     @AppStorage("train.pretrainedD") private var pretrainedD: String = ""
@@ -248,6 +249,7 @@ struct TrainingView: View {
                 HStack {
                     Toggle("最新のみ保存", isOn: $ifSaveLatest)
                     Toggle("GPU にキャッシュ", isOn: $ifCacheGpu)
+                    Toggle("GPU 学習を要求", isOn: $requireGPU)
                     Toggle("毎回重みを保存", isOn: $ifSaveEveryWeights)
                 }
                 FilePickerField(
@@ -513,6 +515,7 @@ struct TrainingView: View {
             "version": .string(version),
             "gpus": .string(gpus),
             "n_p": .number(nProcess),
+            "require_gpu": .bool(requireGPU),
         ])
     }
 
@@ -532,6 +535,7 @@ struct TrainingView: View {
             "gpus": .string(gpus),
             "if_cache_gpu": .bool(ifCacheGpu),
             "if_save_every_weights": .bool(ifSaveEveryWeights),
+            "require_gpu": .bool(requireGPU),
             "version": .string(version),
             "author": .string(author),
         ])

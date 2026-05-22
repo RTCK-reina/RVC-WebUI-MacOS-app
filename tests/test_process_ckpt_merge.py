@@ -40,23 +40,27 @@ def _swap_in_real_modules():
     for key in list(saved):
         sys.modules.pop(key, None)
 
-    import torch  # real torch from rvc conda env
+    try:
+        import torch  # real torch from rvc conda env
 
-    if not hasattr(torch, "zeros") or not callable(getattr(torch, "zeros", None)):
-        raise RuntimeError(
-            "real torch required for this test — got a stub. "
-            "Run pytest inside the rvc conda env."
-        )
-    # The stub advertised version "2.0.0+mock" — guard against that sneaking in.
-    if str(getattr(torch, "__version__", "")).endswith("+mock"):
-        raise RuntimeError("real torch required; got +mock stub")
+        if not hasattr(torch, "zeros") or not callable(getattr(torch, "zeros", None)):
+            raise RuntimeError(
+                "real torch required for this test — got a stub. "
+                "Run pytest inside the rvc conda env."
+            )
+        # The stub advertised version "2.0.0+mock" — guard against that sneaking in.
+        if str(getattr(torch, "__version__", "")).endswith("+mock"):
+            raise RuntimeError("real torch required; got +mock stub")
 
-    mod = importlib.import_module("infer.lib.train.process_ckpt")
-    # Avoid pulling real infer.modules.vc (heavy). These are set after import
-    # so the merge() body uses them via module attribute lookup.
-    mod.model_hash_ckpt = lambda _opt: "hash-stub"
-    mod.hash_id = lambda _h: "id-stub"
-    return saved, mod, torch
+        mod = importlib.import_module("infer.lib.train.process_ckpt")
+        # Avoid pulling real infer.modules.vc (heavy). These are set after import
+        # so the merge() body uses them via module attribute lookup.
+        mod.model_hash_ckpt = lambda _opt: "hash-stub"
+        mod.hash_id = lambda _h: "id-stub"
+        return saved, mod, torch
+    except Exception:
+        _restore_modules(saved)
+        raise
 
 
 def _restore_modules(saved: dict[str, object]):
@@ -71,7 +75,16 @@ def real_process_ckpt():
     # Module-scoped: torch's native extension cannot be unloaded and
     # re-imported safely (RuntimeError: function already has a docstring),
     # so we do the stub swap exactly once per test module.
-    saved, mod, torch = _swap_in_real_modules()
+    try:
+        saved, mod, torch = _swap_in_real_modules()
+    except ModuleNotFoundError as e:
+        if e.name == "torch":
+            pytest.skip("real torch is not installed in this Python environment")
+        raise
+    except RuntimeError as e:
+        if "real torch required" in str(e):
+            pytest.skip(str(e))
+        raise
     try:
         yield mod, torch
     finally:

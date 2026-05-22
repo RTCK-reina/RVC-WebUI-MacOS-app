@@ -56,6 +56,37 @@ if _early_args.base_dir:
 if _early_args.user_dir:
     os.environ["RVC_USER_DIR"] = str(Path(_early_args.user_dir).expanduser().resolve())
 
+
+def _configure_early_cache_dirs() -> None:
+    """Set writable cache env vars before importing librosa/numba users.
+
+    The heavy VC imports below pull in modules that lazily import librosa and
+    numba. If those modules are imported before Config() has populated cache
+    paths, numba can later fail with "cannot cache function ... no locator
+    available" when model info or inference first touches librosa.feature.
+    """
+    raw_user_dir = os.environ.get("RVC_USER_DIR")
+    if not raw_user_dir:
+        return
+    user_dir = Path(raw_user_dir).expanduser().resolve()
+    cache_dir = user_dir / "cache"
+    for path in (
+        cache_dir,
+        cache_dir / "fontconfig",
+        cache_dir / "matplotlib",
+        cache_dir / "numba",
+    ):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+    os.environ.setdefault("XDG_CACHE_HOME", str(cache_dir))
+    os.environ.setdefault("MPLCONFIGDIR", str(cache_dir / "matplotlib"))
+    os.environ.setdefault("NUMBA_CACHE_DIR", str(cache_dir / "numba"))
+
+
+_configure_early_cache_dirs()
+
 # Ensure we can import the repo modules whether invoked from the repo root or
 # from inside the .app bundle.
 _base = Path(os.environ.get("RVC_BASE_DIR", os.getcwd())).resolve()
@@ -72,6 +103,7 @@ except Exception:
 
 if sys.platform == "darwin":
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 # Load env defaults (sha256 checksums, etc). These files ship inside the bundle.
@@ -439,8 +471,15 @@ def rpc_initialize(params: dict) -> dict:
         "gpu_mem_gb": c.gpu_mem,
         "n_cpu": c.n_cpu,
         "torch_version": torch.__version__,
-        "mps_available": torch.backends.mps.is_available(),
+        "mps_built": bool(
+            hasattr(torch.backends, "mps") and torch.backends.mps.is_built()
+        ),
+        "mps_available": bool(
+            getattr(c, "mps_available", torch.backends.mps.is_available())
+        ),
+        "mps_error": getattr(c, "mps_error", None),
         "cuda_available": torch.cuda.is_available(),
+        "gpu_training_available": c.device == "mps" or str(c.device).startswith("cuda"),
         "python_version": sys.version.split()[0],
         "paths": {
             "weight_root": os.environ.get("weight_root"),
@@ -1324,6 +1363,44 @@ def rpc_realtime_start(params: dict) -> dict:
         input_device = int(input_device)
     if output_device is not None:
         output_device = int(output_device)
+
+    try:
+        visible_devices = sd.query_devices()
+    except Exception as e:
+        return {"status": "error", "error": f"Audio device query failed: {e}"}
+
+    has_input = any(d["max_input_channels"] > 0 for d in visible_devices)
+    has_output = any(d["max_output_channels"] > 0 for d in visible_devices)
+    if input_device is None and not has_input:
+        return {
+            "status": "error",
+            "error": "No Core Audio input device is visible to the Python backend.",
+        }
+    if output_device is None and not has_output:
+        return {
+            "status": "error",
+            "error": "No Core Audio output device is visible to the Python backend.",
+        }
+    if input_device is not None:
+        try:
+            input_info = sd.query_devices(input_device)
+            if input_info.get("max_input_channels", 0) <= 0:
+                return {
+                    "status": "error",
+                    "error": f"Selected input device has no input channels: {input_device}",
+                }
+        except Exception as e:
+            return {"status": "error", "error": f"Invalid input device {input_device}: {e}"}
+    if output_device is not None:
+        try:
+            output_info = sd.query_devices(output_device)
+            if output_info.get("max_output_channels", 0) <= 0:
+                return {
+                    "status": "error",
+                    "error": f"Selected output device has no output channels: {output_device}",
+                }
+        except Exception as e:
+            return {"status": "error", "error": f"Invalid output device {output_device}: {e}"}
 
     device = app_state.config.device
     is_half = app_state.config.is_half

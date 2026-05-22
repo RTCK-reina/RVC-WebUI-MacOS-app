@@ -78,6 +78,49 @@ def wav2(i: BytesIO, o: BufferedWriter, format: str):
     inp.close()
 
 
+def _audio_stream_channels(audio_stream) -> int:
+    """Return the stream channel count across PyAV versions."""
+    for attr in ("channels",):
+        val = getattr(audio_stream, attr, None)
+        if val is not None:
+            return max(1, int(val))
+
+    cc = getattr(audio_stream, "codec_context", None)
+    if cc is not None:
+        val = getattr(cc, "channels", None)
+        if val is not None:
+            return max(1, int(val))
+
+    layout = getattr(audio_stream, "layout", None)
+    if layout is not None:
+        layout_channels = getattr(layout, "channels", None)
+        if layout_channels is not None:
+            try:
+                return max(1, len(layout_channels))
+            except TypeError:
+                try:
+                    return max(1, int(layout_channels))
+                except (TypeError, ValueError):
+                    pass
+        layout_name = str(getattr(layout, "name", layout)).lower()
+        if layout_name == "mono":
+            return 1
+        if layout_name == "stereo":
+            return 2
+
+    return 1
+
+
+def _ensure_audio_capacity(audio: np.ndarray, end_index: int) -> np.ndarray:
+    """Grow a channel-first audio buffer without np.resize data repetition."""
+    if end_index <= audio.shape[1]:
+        return audio
+    new_len = max(end_index, audio.shape[1] * 2)
+    grown = np.zeros((audio.shape[0], new_len), dtype=audio.dtype)
+    grown[:, : audio.shape[1]] = audio
+    return grown
+
+
 def load_audio(
     file: Union[str, BytesIO, Path],
     sr: Optional[int] = None,
@@ -88,74 +131,90 @@ def load_audio(
         isinstance(file, Path) and not file.exists()
     ):
         raise FileNotFoundError(f"File not found: {file}")
-    rate = 0
 
     container = av.open(file, format=format)
-    audio_stream = next(s for s in container.streams if s.type == "audio")
-    channels = 1 if audio_stream.layout == "mono" else 2
-    container.seek(0)
-    resampler = (
-        AudioResampler(format="fltp", layout=audio_stream.layout, rate=sr)
-        if sr is not None
-        else None
-    )
+    try:
+        audio_stream = next(s for s in container.streams if s.type == "audio")
+        channels = _audio_stream_channels(audio_stream)
+        container.seek(0)
+        resampler = (
+            AudioResampler(format="fltp", layout=audio_stream.layout, rate=sr)
+            if sr is not None
+            else None
+        )
 
-    # Estimated maximum total number of samples to pre-allocate the array
-    # AV stores length in microseconds by default
-    estimated_total_samples = (
-        int(container.duration * sr // 1_000_000) if sr is not None else 48000
-    )
-    decoded_audio = np.zeros(
-        (
-            estimated_total_samples + 1
-            if channels == 1
-            else (channels, estimated_total_samples + 1)
-        ),
-        dtype=np.float32,
-    )
-
-    offset = 0
-
-    def process_packet(packet: List[AudioFrame]):
-        frames_data = []
+        # AV stores duration in microseconds. Some streams do not expose it,
+        # so fall back to one second and grow the buffer as frames arrive.
+        target_rate = sr if sr is not None else _audio_stream_sample_rate(audio_stream)
+        estimated_total_samples = (
+            int(container.duration * target_rate // 1_000_000)
+            if container.duration is not None
+            else target_rate
+        )
+        decoded_audio = np.zeros(
+            (channels, estimated_total_samples + 1), dtype=np.float32
+        )
+        offset = 0
         rate = 0
-        for frame in packet:
-            # frame.pts = None  # 清除时间戳，避免重新采样问题
-            resampled_frames = (
-                resampler.resample(frame) if resampler is not None else [frame]
-            )
-            for resampled_frame in resampled_frames:
-                frame_data = resampled_frame.to_ndarray()
-                rate = resampled_frame.rate
-                frames_data.append(frame_data)
-        return (rate, frames_data)
 
-    def frame_iter(container):
-        for p in container.demux(container.streams.audio[0]):
-            yield p.decode()
-
-    for r, frames_data in map(process_packet, frame_iter(container)):
-        if not rate:
-            rate = r
-        for frame_data in frames_data:
-            end_index = offset + len(frame_data[0])
-
-            # 检查 decoded_audio 是否有足够的空间，并在必要时调整大小
-            if end_index > decoded_audio.shape[1]:
-                decoded_audio = np.resize(
-                    decoded_audio, (decoded_audio.shape[0], end_index * 4)
+        def process_packet(packet: List[AudioFrame]):
+            frames_data = []
+            packet_rate = 0
+            for frame in packet:
+                # frame.pts = None  # 清除时间戳，避免重新采样问题
+                resampled_frames = (
+                    resampler.resample(frame) if resampler is not None else [frame]
                 )
+                for resampled_frame in resampled_frames:
+                    frame_data = resampled_frame.to_ndarray()
+                    if frame_data.ndim == 1:
+                        frame_data = frame_data[np.newaxis, :]
+                    packet_rate = resampled_frame.rate
+                    frames_data.append(frame_data)
+            return packet_rate, frames_data
 
-            np.copyto(decoded_audio[..., offset:end_index], frame_data)
-            offset += len(frame_data[0])
+        def frame_iter():
+            for packet in container.demux(container.streams.audio[0]):
+                yield packet.decode()
 
-    container.close()
+        for packet_rate, frames_data in map(process_packet, frame_iter()):
+            if not rate:
+                rate = packet_rate
+            for frame_data in frames_data:
+                end_index = offset + len(frame_data[0])
+                frame_channels = frame_data.shape[0]
+                if frame_channels != decoded_audio.shape[0]:
+                    if offset == 0:
+                        decoded_audio = np.zeros(
+                            (frame_channels, decoded_audio.shape[1]),
+                            dtype=decoded_audio.dtype,
+                        )
+                    elif frame_channels == 1:
+                        frame_data = np.repeat(
+                            frame_data, decoded_audio.shape[0], axis=0
+                        )
+                    elif decoded_audio.shape[0] == 1:
+                        decoded_audio = np.repeat(
+                            decoded_audio, frame_channels, axis=0
+                        )
+                    else:
+                        raise ValueError(
+                            "Audio channel count changed from "
+                            f"{decoded_audio.shape[0]} to {frame_channels}"
+                        )
 
-    # Truncate the array to the actual size
+                decoded_audio = _ensure_audio_capacity(decoded_audio, end_index)
+                np.copyto(decoded_audio[..., offset:end_index], frame_data)
+                offset += len(frame_data[0])
+    finally:
+        container.close()
+
     decoded_audio = decoded_audio[..., :offset]
 
     if mono and decoded_audio.shape[0] > 1:
         decoded_audio = decoded_audio.mean(0)
+    elif mono and decoded_audio.shape[0] == 1:
+        decoded_audio = decoded_audio[0]
 
     if sr is not None:
         return decoded_audio
@@ -213,12 +272,7 @@ def get_audio_properties(input_path: str) -> Tuple[int, int]:
     container = av.open(input_path)
     try:
         audio_stream = next(s for s in container.streams if s.type == "audio")
-        # PyAV 14+ uses `channels`, older versions use `layout`.
-        channels = getattr(audio_stream, "channels", None)
-        if channels is None:
-            channels = 1 if getattr(audio_stream, "layout", None) == "mono" else 2
-        else:
-            channels = int(channels)
+        channels = _audio_stream_channels(audio_stream)
         rate = _audio_stream_sample_rate(audio_stream)
         return channels, rate
     finally:

@@ -256,6 +256,24 @@ class TestLoadAudio:
         result = load_audio(str(p), sr=16000, mono=True)
         assert result.ndim == 1
 
+    def test_mono_false_preserves_single_channel_input(self, tmp_path):
+        data = self._make_wav_bytes(sr=16000, duration=0.1)
+        p = tmp_path / "mono.wav"
+        p.write_bytes(data)
+        result = load_audio(str(p), sr=16000, mono=False)
+        assert result.ndim == 2
+        assert result.shape[0] == 1
+
+    def test_stereo_mono_false_preserves_two_channels(self, tmp_path):
+        mono = _sine_wave(440, 16000, 0.1)
+        stereo = np.stack([mono, mono * 0.5], axis=0)
+        buf = float_np_array_to_wav_buf(stereo, 16000, f32=False)
+        p = tmp_path / "stereo.wav"
+        p.write_bytes(buf.getvalue())
+        result = load_audio(str(p), sr=16000, mono=False)
+        assert result.ndim == 2
+        assert result.shape[0] == 2
+
     def test_float32_output(self, tmp_path):
         data = self._make_wav_bytes(sr=16000, duration=0.1)
         p = tmp_path / "f.wav"
