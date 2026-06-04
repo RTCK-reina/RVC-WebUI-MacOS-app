@@ -8,6 +8,7 @@ Usage:
     python tools/test_rpc.py            # uses current python
     RVC_PYTHON=/path/to/python3 python tools/test_rpc.py
 """
+
 import json
 import os
 import subprocess
@@ -59,11 +60,15 @@ def main():
                 continue
             if "id" in msg and msg["id"] is not None:
                 responses[msg["id"]] = msg
-                print(f"<= RESP id={msg['id']}: {json.dumps(msg.get('result') or msg.get('error'), indent=2)[:400]}")
+                print(
+                    f"<= RESP id={msg['id']}: {json.dumps(msg.get('result') or msg.get('error'), indent=2)[:400]}"
+                )
             else:
                 notifications.append(msg)
                 if msg.get("method") not in ("resource_stats",):
-                    print(f"<= NOTIF {msg['method']}: {json.dumps(msg.get('params'))[:200]}")
+                    print(
+                        f"<= NOTIF {msg['method']}: {json.dumps(msg.get('params'))[:200]}"
+                    )
 
     threading.Thread(target=reader, daemon=True).start()
 

@@ -10,6 +10,7 @@ gui.py のリアルタイムVC SOLA オフセット計算の回帰テスト。
   症状は「macOS でリアルタイムVC が無音」となり発見が遅れた。
 - 本テストは同じ書き方が再発していないことを保証する。
 """
+
 from __future__ import annotations
 
 import pytest
@@ -74,7 +75,7 @@ class TestSolaOffsetCalculation:
         cor_nom = F.conv1d(conv_input, sola_buffer[None, None, :])
         cor_den = torch.sqrt(
             F.conv1d(
-                conv_input ** 2,
+                conv_input**2,
                 torch.ones(1, 1, sola_buffer_frame),
             )
             + 1e-8
@@ -101,7 +102,7 @@ class TestSolaOffsetCalculation:
         cor_nom = F.conv1d(conv_input, sola_buffer[None, None, :])
         cor_den = torch.sqrt(
             F.conv1d(
-                conv_input ** 2,
+                conv_input**2,
                 torch.ones(1, 1, sola_buffer_frame),
             )
             + 1e-8

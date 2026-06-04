@@ -98,9 +98,7 @@ class RMVPE(F0Predictor):
         # 360-class pitch grid, 20 cents per bin, zero-padded ±4 so the
         # argmax-centered averaging window always has a valid lookup range
         # (_to_local_average_cents pads salience the same way).
-        self.cents_mapping = np.pad(
-            20 * np.arange(360) + 1997.3794084376191, (4, 4)
-        )
+        self.cents_mapping = np.pad(20 * np.arange(360) + 1997.3794084376191, (4, 4))
 
     def forward(self, x):
         with torch.no_grad():
@@ -190,9 +188,7 @@ class RMVPE(F0Predictor):
             if self.is_half:
                 hidden = hidden.astype("float32")
             f0 = self._decode(hidden, thred=filter_radius)
-            results.append(
-                self._interpolate_f0(self._resize_f0(f0, p_lens[i]))[0]
-            )
+            results.append(self._interpolate_f0(self._resize_f0(f0, p_lens[i]))[0])
         return results
 
     def _to_local_average_cents(self, salience, threshold=0.05):

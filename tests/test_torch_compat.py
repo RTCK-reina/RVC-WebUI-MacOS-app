@@ -9,6 +9,7 @@ infer/lib/torch_compat.py のユニットテスト。
 - スレッドセーフ: 複数スレッドが同時に legacy_load() を使っても torch.load が
   不定順序で復元されない
 """
+
 from __future__ import annotations
 
 import sys
@@ -46,10 +47,10 @@ from infer.lib.torch_compat import (  # noqa: E402
 )
 import infer.lib.torch_compat as _tc
 
-
 # ---------------------------------------------------------------------------
 # ヘルパー
 # ---------------------------------------------------------------------------
+
 
 def _reset_state():
     """各テスト前に torch_compat モジュールの内部状態をリセットする。"""
@@ -69,6 +70,7 @@ def reset_torch_compat_state():
 # ---------------------------------------------------------------------------
 # テスト: 基本動作
 # ---------------------------------------------------------------------------
+
 
 class TestBasicBehavior:
     def test_patches_torch_load_inside_block(self):
@@ -127,6 +129,7 @@ class TestBasicBehavior:
 # テスト: 例外安全
 # ---------------------------------------------------------------------------
 
+
 class TestExceptionSafety:
     def test_restores_on_exception(self):
         """with ブロック内で例外が発生しても torch.load が復元される。"""
@@ -158,6 +161,7 @@ class TestExceptionSafety:
 # ---------------------------------------------------------------------------
 # テスト: 再入可能（ネスト）
 # ---------------------------------------------------------------------------
+
 
 class TestReentrancy:
     def test_nested_calls_share_single_patch(self):
@@ -198,6 +202,7 @@ class TestReentrancy:
 # テスト: スレッドセーフ
 # ---------------------------------------------------------------------------
 
+
 class TestThreadSafety:
     def test_concurrent_calls_restore_correctly(self):
         """複数スレッドが同時に legacy_load() を使っても torch.load が正しく復元される。"""
@@ -211,8 +216,9 @@ class TestThreadSafety:
                 barrier.wait()
                 with legacy_load():
                     time.sleep(0.001)  # クリティカルセクションを少し広げる
-                    assert _torch_mock.load is not original, \
-                        "with ブロック内でパッチが外れている"
+                    assert (
+                        _torch_mock.load is not original
+                    ), "with ブロック内でパッチが外れている"
                     assert _tc._legacy_load_count > 0
             except Exception as e:
                 errors.append(e)
@@ -224,7 +230,9 @@ class TestThreadSafety:
             t.join(timeout=5)
 
         assert not errors, f"スレッドエラー: {errors}"
-        assert _torch_mock.load is original, "全スレッド終了後に torch.load が元に戻っていない"
+        assert (
+            _torch_mock.load is original
+        ), "全スレッド終了後に torch.load が元に戻っていない"
         assert _tc._legacy_load_count == 0
 
     def test_no_interleaved_restore(self):
@@ -252,8 +260,9 @@ class TestThreadSafety:
                 with legacy_load():
                     pass  # すぐ exit
                 # fast_worker が exit しても slow_worker 中はパッチが残る
-                assert _torch_mock.load is not original, \
-                    "fast_worker exit で torch.load が早期復元された"
+                assert (
+                    _torch_mock.load is not original
+                ), "fast_worker exit で torch.load が早期復元された"
             except Exception as e:
                 errors.append(e)
             finally:

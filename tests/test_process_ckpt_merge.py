@@ -17,13 +17,13 @@ This module pops the stubs, imports the real modules from the ``rvc``
 conda env, and restores state on teardown so subsequent test files
 (which rely on the stubs) continue to work.
 """
+
 from __future__ import annotations
 
 import importlib
 import sys
 
 import pytest
-
 
 _SWAPPED_KEYS = ("torch", "infer.lib.train.process_ckpt")
 
@@ -115,9 +115,7 @@ def test_merge_preserves_author_from_inference_ckpts(
     torch.save(_inference_ckpt(torch, "Alice"), str(p1))
     torch.save(_inference_ckpt(torch, "Bob"), str(p2))
 
-    result = mod.merge(
-        str(p1), str(p2), 0.5, "40k", 1, "info", "merged_authors", "v2"
-    )
+    result = mod.merge(str(p1), str(p2), 0.5, "40k", 1, "info", "merged_authors", "v2")
     assert result == "Success.", result
 
     out = tmp_path / "merged_authors.pth"
@@ -126,9 +124,7 @@ def test_merge_preserves_author_from_inference_ckpts(
     assert loaded["author"] == "Alice & Bob"
 
 
-def test_merge_extracts_raw_training_ckpt(
-    tmp_path, monkeypatch, real_process_ckpt
-):
+def test_merge_extracts_raw_training_ckpt(tmp_path, monkeypatch, real_process_ckpt):
     """Regression guard for bug 1 (extract() shape mismatch).
 
     Without the extract() fix, merge() catches AttributeError and returns
@@ -142,9 +138,7 @@ def test_merge_extracts_raw_training_ckpt(
     torch.save(_raw_training_ckpt(torch, "Carol"), str(p1))
     torch.save(_inference_ckpt(torch, "Dave"), str(p2))
 
-    result = mod.merge(
-        str(p1), str(p2), 0.5, "40k", 1, "info", "merged_raw", "v2"
-    )
+    result = mod.merge(str(p1), str(p2), 0.5, "40k", 1, "info", "merged_raw", "v2")
     assert result == "Success.", result
 
     out = tmp_path / "merged_raw.pth"

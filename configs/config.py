@@ -116,15 +116,23 @@ def _populate_env_paths(base_dir: Path, user_dir: Path) -> None:
 class Config:
     def __init__(self, base_dir=None, user_dir=None):
         # Resolve dirs first so that load_config_json / path helpers can use them.
-        self.base_dir: Path = Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
-        self.user_dir: Path = Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        self.base_dir: Path = (
+            Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
+        )
+        self.user_dir: Path = (
+            Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        )
         ensure_user_layout(self.user_dir)
         _populate_env_paths(self.base_dir, self.user_dir)
 
         self.device = "cuda:0"
         self.is_half = True
         self.use_jit = False
-        self.use_onnx = os.environ.get("RVC_USE_ONNX", "").lower() in ("1", "true", "yes")
+        self.use_onnx = os.environ.get("RVC_USE_ONNX", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         self.n_cpu = 0
         self.gpu_name = None
         self.json_config = self.load_config_json()
@@ -182,10 +190,14 @@ class Config:
         """
         exe = sys.executable or "python"
         parser = argparse.ArgumentParser()
-        parser.add_argument("--port", type=int, default=7865, help="Listen port (legacy web.py)")
+        parser.add_argument(
+            "--port", type=int, default=7865, help="Listen port (legacy web.py)"
+        )
         parser.add_argument("--pycmd", type=str, default=exe, help="Python command")
         parser.add_argument(
-            "--global_link", action="store_true", help="Generate a global proxy link (legacy web.py)"
+            "--global_link",
+            action="store_true",
+            help="Generate a global proxy link (legacy web.py)",
         )
         parser.add_argument(
             "--noparallel", action="store_true", help="Disable parallel processing"
@@ -207,8 +219,12 @@ class Config:
             "--update", action="store_true", help="Update to latest assets"
         )
         # Known but ignored here (rpc_server.py parses these before Config()):
-        parser.add_argument("--base-dir", type=str, default=None, help=argparse.SUPPRESS)
-        parser.add_argument("--user-dir", type=str, default=None, help=argparse.SUPPRESS)
+        parser.add_argument(
+            "--base-dir", type=str, default=None, help=argparse.SUPPRESS
+        )
+        parser.add_argument(
+            "--user-dir", type=str, default=None, help=argparse.SUPPRESS
+        )
         cmd_opts, _unknown = parser.parse_known_args()
 
         cmd_opts.port = cmd_opts.port if 0 <= cmd_opts.port <= 65535 else 7865
@@ -338,8 +354,12 @@ class Config:
 @singleton_variable
 class CPUConfig:
     def __init__(self, base_dir=None, user_dir=None):
-        self.base_dir: Path = Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
-        self.user_dir: Path = Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        self.base_dir: Path = (
+            Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
+        )
+        self.user_dir: Path = (
+            Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        )
         ensure_user_layout(self.user_dir)
         _populate_env_paths(self.base_dir, self.user_dir)
 

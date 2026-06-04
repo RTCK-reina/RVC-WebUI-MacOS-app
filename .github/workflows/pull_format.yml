@@ -1,48 +1,20 @@
-name: Check Pull Format
+name: Check Pull Request Base
 
 on:
   pull_request_target:
     types: [opened, reopened]
 
 jobs:
-  # This workflow closes invalid PR
+  # Close PRs that target a branch other than `main` (this fork's default
+  # branch). Formatting and tests are gated by ci.yml.
   close_pr:
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      pull-requests: write
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      - name: Close PR if it is not pointed to main branch
+      - name: Close PR if it is not pointed to the main branch
         if: github.event.pull_request.base.ref != 'main'
         uses: superbrothers/close-pull-request@v3
         with:
-          # Optional. Post a issue comment just before closing a pull request.
-          comment: "Invalid PR to `non-main` branch `${{ github.event.pull_request.base.ref }}`."
-
-  pull_format:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    continue-on-error: true
-
-    steps:
-      - name: Checkout
-        continue-on-error: true
-        uses: actions/checkout@v3
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install Black
-        run: pip install "black[jupyter]"
-
-      - name: Run Black
-        # run: black $(git ls-files '*.py')
-        run: black .
+          comment: "Invalid PR to non-`main` branch `${{ github.event.pull_request.base.ref }}`. Please retarget this PR to `main`."

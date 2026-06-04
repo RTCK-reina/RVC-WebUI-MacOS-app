@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - dev
 
 jobs:
   push_format:
@@ -15,20 +14,19 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
-          ref: ${{github.ref_name}}
+          ref: ${{ github.ref_name }}
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
 
       - name: Install Black
-        run: pip install "black[jupyter]"
+        run: pip install "black[jupyter]==24.10.0"
 
       - name: Run Black
-        # run: black $(git ls-files '*.py')
         run: black .
 
       - name: Commit Back
@@ -38,15 +36,15 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add --all
-          git commit -m "chore(format): run black on ${{github.ref_name}}"
+          git commit -m "chore(format): run black on ${{ github.ref_name }}"
 
       - name: Create Pull Request
         if: steps.commitback.outcome == 'success'
         continue-on-error: true
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v7
         with:
           delete-branch: true
           body: "Automatically apply code formatter change"
-          title: "chore(format): run black on ${{github.ref_name}}"
-          commit-message: "chore(format): run black on ${{github.ref_name}}"
-          branch: formatter-${{github.ref_name}}
+          title: "chore(format): run black on ${{ github.ref_name }}"
+          commit-message: "chore(format): run black on ${{ github.ref_name }}"
+          branch: formatter-${{ github.ref_name }}
