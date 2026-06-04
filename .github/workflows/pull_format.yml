@@ -13,12 +13,12 @@ jobs:
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      - name: Close PR if it is not pointed to dev branch
-        if: github.event.pull_request.base.ref != 'dev'
+      - name: Close PR if it is not pointed to main branch
+        if: github.event.pull_request.base.ref != 'main'
         uses: superbrothers/close-pull-request@v3
         with:
           # Optional. Post a issue comment just before closing a pull request.
-          comment: "Invalid PR to `non-dev` branch `${{ github.event.pull_request.base.ref }}`."
+          comment: "Invalid PR to `non-main` branch `${{ github.event.pull_request.base.ref }}`."
 
   pull_format:
     runs-on: ubuntu-latest
