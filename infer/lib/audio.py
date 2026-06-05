@@ -34,6 +34,23 @@ def float_to_int16(audio: np.ndarray) -> np.ndarray:
     return np.multiply(audio, am).astype(np.int16)
 
 
+def _to_int16_pcm(wav: np.ndarray) -> np.ndarray:
+    """Return int16 PCM samples for WAV writing, dtype-aware.
+
+    Float arrays are assumed to be in roughly [-1, 1] and are peak-normalised
+    by ``float_to_int16``. Integer arrays are ALREADY PCM — e.g. the inference
+    pipeline (``infer/modules/vc/pipeline.py``) deliberately preserves output
+    loudness and the rms-mix envelope, then casts to int16. Running such an
+    array back through ``float_to_int16`` would peak-normalise it to full scale
+    (a quiet passage gets amplified Nx), destroying that loudness and making
+    batch files inconsistent. For integer input we only clip+cast, never
+    re-normalise.
+    """
+    if np.issubdtype(wav.dtype, np.integer):
+        return np.clip(wav, -32768, 32767).astype(np.int16)
+    return float_to_int16(wav)
+
+
 def float_np_array_to_wav_buf(wav: np.ndarray, sr: int, f32=False) -> BytesIO:
     buf = BytesIO()
     if f32:
@@ -43,7 +60,7 @@ def float_np_array_to_wav_buf(wav: np.ndarray, sr: int, f32=False) -> BytesIO:
             wf.setnchannels(2 if len(wav.shape) > 1 else 1)
             wf.setsampwidth(2)  # Sample width in bytes
             wf.setframerate(sr)  # Sample rate in Hz
-            pcm = float_to_int16(wav.T if len(wav.shape) > 1 else wav)
+            pcm = _to_int16_pcm(wav.T if len(wav.shape) > 1 else wav)
             wf.writeframes(np.ascontiguousarray(pcm).tobytes())
     buf.seek(0, 0)
     return buf

@@ -463,6 +463,12 @@ struct SeparationView: View {
                 AppNotification.send(
                     title: "音声分離が完了しました",
                     body: "ボーカルと伴奏の分離が正常に終了しました。")
+            } else if r.status == "cancelled" {
+                // User-initiated stop — not a failure. No red banner.
+                errorMessage = nil
+                AppNotification.send(
+                    title: "音声分離を停止しました",
+                    body: "ユーザー操作により中断されました。")
             } else {
                 errorMessage = "分離に失敗しました"
                 AppNotification.send(
@@ -480,9 +486,13 @@ struct SeparationView: View {
     private func cancel() {
         let id = taskID
         Task {
-            _ = try? await bridge.callRaw("cancel",
-                params: .object(["task_id": .string(id)]))
+            // Staged escalation (soft → force → hardRestart) for parity with
+            // training; surfaces a real failure if even the restart fails.
+            let outcome = await bridge.cancelTask(id)
             bridge.clearProgress(for: id)
+            if case .restartFailed(let reason) = outcome {
+                errorMessage = "停止に失敗しました（バックエンド再起動も失敗）: \(reason)"
+            }
         }
     }
 }

@@ -92,7 +92,9 @@ if os.access(model_path, os.F_OK) == False:
         "Error: Extracting is shut down because %s does not exist, you may download it from https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main"
         % model_path
     )
-    exit(0)
+    # Exit non-zero so the parent (rpc_extract_f0) detects the failure instead
+    # of advancing to train.py with an empty feature directory.
+    exit(1)
 with legacy_load():
     models, saved_cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
         [model_path],

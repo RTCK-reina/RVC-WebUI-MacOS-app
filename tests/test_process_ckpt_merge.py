@@ -104,13 +104,15 @@ def _inference_ckpt(torch, author: str):
 
 
 def _raw_training_ckpt(torch, author: str):
-    # Raw G_*.pth shape — state dict lives under "model".
+    # Raw G_*.pth shape — state dict lives under "model". A real checkpoint
+    # from utils.save_checkpoint has NO "config" key (only model/iteration/
+    # optimizer/learning_rate), so we deliberately omit it: merge() must derive
+    # config from the sr/version args instead of indexing ckpt1["config"].
     return {
         "model": {
             "layer.weight": torch.zeros(2, 2),
             "layer.bias": torch.zeros(2),
         },
-        "config": [1, 2, 3],
         "iteration": 0,
         "author": author,
     }
@@ -164,3 +166,35 @@ def test_merge_extracts_raw_training_ckpt(
     assert out.exists()
     loaded = torch.load(str(out), map_location="cpu")
     assert loaded["author"] == "Carol & Dave"
+
+
+def test_merge_raw_ckpt_without_config_stamps_synth_config(
+    tmp_path, monkeypatch, real_process_ckpt
+):
+    """Regression guard for bug 3 (KeyError on a configless raw G_*.pth).
+
+    merge() used to read ``ckpt1["config"]`` unconditionally; a real raw
+    checkpoint has no such key, so it raised KeyError that the bare except
+    swallowed into a returned traceback. It must now derive the config from
+    the requested sr/version, stamping the canonical 40k synthesizer config.
+    """
+    mod, torch = real_process_ckpt
+    monkeypatch.setenv("weight_root", str(tmp_path))
+
+    # BOTH inputs are raw checkpoints with no embedded "config".
+    p1 = tmp_path / "raw1.pth"
+    p2 = tmp_path / "raw2.pth"
+    torch.save(_raw_training_ckpt(torch, "Eve"), str(p1))
+    torch.save(_raw_training_ckpt(torch, "Frank"), str(p2))
+
+    result = mod.merge(
+        str(p1), str(p2), 0.5, "40k", 1, "info", "merged_cfg", "v2"
+    )
+    assert result == "Success.", result
+
+    loaded = torch.load(str(tmp_path / "merged_cfg.pth"), map_location="cpu")
+    # The derived config must match the canonical 40k table (18 fields, with
+    # the trailing sampling rate 40000), NOT a KeyError-swallowed failure.
+    assert loaded["config"] == mod._synth_config("40k", "v2")
+    assert loaded["config"][-1] == 40000
+    assert loaded["sr"] == "40k"  # string key, not int 40000

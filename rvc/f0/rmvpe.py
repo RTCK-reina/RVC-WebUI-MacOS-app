@@ -199,15 +199,14 @@ class RMVPE(F0Predictor):
         center = np.argmax(salience, axis=1)  # 帧长#index
         salience = np.pad(salience, ((0, 0), (4, 4)))  # 帧长,368
         center += 4
-        todo_salience = []
-        todo_cents_mapping = []
         starts = center - 4
-        ends = center + 5
-        for idx in range(salience.shape[0]):
-            todo_salience.append(salience[:, starts[idx] : ends[idx]][idx])
-            todo_cents_mapping.append(self.cents_mapping[starts[idx] : ends[idx]])
-        todo_salience = np.array(todo_salience)  # 帧长，9
-        todo_cents_mapping = np.array(todo_cents_mapping)  # 帧长，9
+        # Vectorised gather (equivalent to the per-frame Python loop): each
+        # frame takes the 9 contiguous salience/cents bins centred on argmax.
+        # The post-pad index range [starts, starts+9) is always in-bounds
+        # because salience and cents_mapping are both ±4 padded.
+        idx9 = starts[:, None] + np.arange(9)  # 帧长，9
+        todo_salience = salience[np.arange(salience.shape[0])[:, None], idx9]  # 帧长，9
+        todo_cents_mapping = self.cents_mapping[idx9]  # 帧长，9
         product_sum = np.sum(todo_salience * todo_cents_mapping, 1)
         weight_sum = np.sum(todo_salience, 1)  # 帧长
         devided = product_sum / weight_sum  # 帧长

@@ -264,6 +264,12 @@ struct BatchInferenceView: View {
                 AppNotification.send(
                     title: "バッチ推論が完了しました",
                     body: "全ファイルの推論が正常に終了しました。")
+            } else if r.status == "cancelled" {
+                // User-initiated stop — not a failure. No red banner.
+                errorMessage = nil
+                AppNotification.send(
+                    title: "バッチ推論を停止しました",
+                    body: "ユーザー操作により中断されました。")
             } else {
                 errorMessage = r.info ?? "バッチ推論に失敗しました"
                 AppNotification.send(
@@ -281,9 +287,14 @@ struct BatchInferenceView: View {
     private func cancel() {
         let id = taskID
         Task {
-            _ = try? await bridge.callRaw("cancel",
-                params: .object(["task_id": .string(id)]))
+            // Staged escalation (soft → force → hardRestart) so a wedged
+            // backend is actually recovered and the user is told if even that
+            // fails, instead of silently clearing the card.
+            let outcome = await bridge.cancelTask(id)
             bridge.clearProgress(for: id)
+            if case .restartFailed(let reason) = outcome {
+                errorMessage = "停止に失敗しました（バックエンド再起動も失敗）: \(reason)"
+            }
         }
     }
 

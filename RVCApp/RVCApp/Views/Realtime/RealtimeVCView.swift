@@ -80,6 +80,18 @@ struct RealtimeVCView: View {
             .task(id: bridge.isReady) {
                 if bridge.isReady { await refreshDevices() }
             }
+            .onChange(of: bridge.realtimeRunning) { running in
+                // The backend is authoritative: a fatal realtime_error (after
+                // repeated callback failures) or an external stop flips this
+                // false. Leave the running layout instead of getting stuck in
+                // a dead-but-"running" UI with disabled controls.
+                if !running && isRunning {
+                    isRunning = false
+                    if let le = bridge.lastError {
+                        errorMsg = le
+                    }
+                }
+            }
         }
     }
 
@@ -546,6 +558,14 @@ struct RealtimeVCView: View {
     private func stop() async {
         bridge.appendRealtimeEvent(
             level: "info", kind: "client", message: "ユーザーが停止をリクエスト")
+        // Set isRunning=false BEFORE awaiting realtime_stop. The backend emits
+        // its "status":"idle" notification before the RPC response, so it would
+        // arrive during this await and drive realtimeRunning→false; the
+        // .onChange handler must see isRunning already false (a no-op) rather
+        // than treating a clean stop as a fatal error and surfacing a stale
+        // lastError. Also gives immediate UI feedback.
+        isRunning = false
+        lastInfo = ""
         do {
             _ = try await bridge.callRaw(
                 "realtime_stop",
@@ -554,8 +574,6 @@ struct RealtimeVCView: View {
         } catch {
             errorMsg = error.localizedDescription
         }
-        isRunning = false
-        lastInfo = ""
     }
 
     private func pushParamUpdate() async {

@@ -472,6 +472,19 @@ def rpc_preprocess(params: dict, ctx):
                 "log": log,
                 "exp_dir": str(exp_dir),
             }
+        # preprocess.py swallows per-file and whole-run exceptions and always
+        # exits 0, so a returncode of 0 does NOT prove it produced anything.
+        # Verify the slice output is non-empty; otherwise report a clear error
+        # instead of letting train_all advance to extract_f0/train on an empty
+        # dataset and surface a confusing downstream traceback.
+        gt_wavs = exp_dir / "0_gt_wavs"
+        if not gt_wavs.is_dir() or not any(gt_wavs.glob("*.wav")):
+            return {
+                "status": "error",
+                "error": "preprocess produced no audio — check the trainset path and that it contains readable audio files",
+                "log": log,
+                "exp_dir": str(exp_dir),
+            }
         return {"status": "success", "log": log, "exp_dir": str(exp_dir)}
     except Exception as e:
         return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -540,6 +553,18 @@ def rpc_extract_f0(params: dict, ctx):
                     "status": "error",
                     "error": "extract_f0_print.py exited with code %d" % proc.returncode,
                 }
+            # extract_f0_print.py catches per-file failures and exits 0 even
+            # when nothing was produced (e.g. RMVPE weights missing). A clean
+            # exit is not proof of output — verify both F0 dirs are non-empty.
+            f0_dir = exp_dir / "2a_f0"
+            f0nsf_dir = exp_dir / "2b-f0nsf"
+            if not (f0_dir.is_dir() and any(f0_dir.glob("*.npy"))) or not (
+                f0nsf_dir.is_dir() and any(f0nsf_dir.glob("*.npy"))
+            ):
+                return {
+                    "status": "error",
+                    "error": "F0 extraction produced no output — the RMVPE weights may be missing or every clip failed",
+                }
 
         # Step 2: Feature extraction (may parallelize across gpus).
         procs = []
@@ -585,6 +610,17 @@ def rpc_extract_f0(params: dict, ctx):
             return {
                 "status": "error",
                 "error": "extract_feature_print.py worker(s) exited with codes %r" % bad,
+                "log": log,
+            }
+        # A worker can still exit 0 after silently dropping every file. Verify
+        # the feature directory actually has output so train.py is not started
+        # against an empty 3_featureNNN dir (which yields an opaque crash far
+        # from the real cause).
+        feat_dir = exp_dir / ("3_feature768" if version == "v2" else "3_feature256")
+        if not (feat_dir.is_dir() and any(feat_dir.glob("*.npy"))):
+            return {
+                "status": "error",
+                "error": "feature extraction produced no output — the HuBERT weights may be missing or every clip failed",
                 "log": log,
             }
         return {"status": "success", "log": log}
@@ -728,6 +764,14 @@ def rpc_train(params: dict, ctx):
     except Exception as e:
         return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
     finally:
+        # Remove the cancel sentinel now that the run (and any cancel) is fully
+        # handled. _cancel_task touches it on every cancel, and the only other
+        # cleanup is the start-of-run unlink — so without this it would linger
+        # on disk until the same experiment is trained again.
+        try:
+            sentinel.unlink(missing_ok=True)
+        except OSError:
+            pass
         unregister_task(task_id)
         status("idle")
 
@@ -964,7 +1008,21 @@ def rpc_train_all(params: dict, ctx):
                     "results": results,
                 }
             if r.get("status") != "success":
-                return {"status": "error", "failed_stage": name, "results": results}
+                # Surface a top-level "error" string so the UI shows the real
+                # cause (which stage failed and why) instead of a generic
+                # "学習ステージ失敗: train_all". Reuse the sub-stage's own
+                # error message when it has one.
+                sub_error = r.get("error")
+                return {
+                    "status": "error",
+                    "failed_stage": name,
+                    "error": (
+                        "%s ステージが失敗しました: %s" % (name, sub_error)
+                        if sub_error
+                        else "%s ステージが失敗しました" % name
+                    ),
+                    "results": results,
+                }
         emit_progress(task_id, 100.0, "all stages done", "pipeline")
         return {"status": "success", "results": results}
     finally:

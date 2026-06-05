@@ -425,6 +425,11 @@ struct TrainingView: View {
                 AppNotification.send(
                     title: "トレーニング完了",
                     body: "\(method) が正常に終了しました。")
+            } else if r.status == "cancelled" {
+                // User-initiated stop. Cancellation is owned by the
+                // cancelDisplay state machine (see cancel()); setting errorMsg
+                // or firing a failure notification here would render a
+                // contradictory green "停止しました" + red "失敗" at once.
             } else {
                 errorMsg = r.error ?? "学習ステージ失敗: \(method)"
                 AppNotification.send(

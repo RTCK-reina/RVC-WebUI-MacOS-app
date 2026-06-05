@@ -279,11 +279,24 @@ struct SingleInferenceView: View {
             let result: VCSingleResult = try await bridge.call(
                 "vc_single", params: params, timeout: 1800)
             lastResult = result
-            if result.status != "success" {
+            if result.status == "success" {
+                // Single inference can run for minutes; notify on completion
+                // for parity with batch/separation/training (no-op when the
+                // app is frontmost).
+                AppNotification.send(
+                    title: "推論が完了しました",
+                    body: "音声変換が正常に終了しました。")
+            } else {
                 errorMessage = result.info ?? "変換に失敗しました"
+                AppNotification.send(
+                    title: "推論に失敗しました",
+                    body: errorMessage ?? "")
             }
         } catch {
             errorMessage = error.localizedDescription
+            AppNotification.send(
+                title: "推論に失敗しました",
+                body: error.localizedDescription)
         }
     }
 
