@@ -22,3 +22,7 @@ xcuserdata
 # Claude Code
 .claude/
 BUILD_VERIFICATION_REPORT.md
+
+# Local test audio (user-supplied songs for pipeline verification — not source)
+/voicesample/
+.remember/

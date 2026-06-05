@@ -169,6 +169,52 @@ class TestFloatNpArrayToWavBuf:
 
 
 # ---------------------------------------------------------------------------
+# int16 入力の音量保持（回帰ガード）
+# ---------------------------------------------------------------------------
+
+class TestInt16LoudnessPreservation:
+    """int16 配列はそのまま（clip+cast）書き出され、ピーク正規化されないこと。
+
+    推論パイプラインは音量を保持した int16 配列を返す。これを float_to_int16
+    （ピーク正規化）に通すと静かな箇所が N 倍に増幅され、音量と rms-mix が
+    破壊され、バッチ間で音量が不揃いになっていた（回帰防止）。
+    """
+
+    @staticmethod
+    def _read_int16_pcm(buf: io.BytesIO) -> "np.ndarray":
+        buf.seek(0)
+        with wave.open(buf, "rb") as wf:
+            raw = wf.readframes(wf.getnframes())
+        return np.frombuffer(raw, dtype=np.int16)
+
+    def test_quiet_int16_not_amplified(self):
+        # フルスケールの ~30%（float 0.3 相当）の int16。
+        peak = 9830
+        audio = np.array([0, peak, -peak, peak // 2, 0], dtype=np.int16)
+        buf = float_np_array_to_wav_buf(audio, 16000, f32=False)
+        pcm = self._read_int16_pcm(buf)
+        # ピークが保持される（ゲイン ~1.0）— フルスケールに押し上げられない。
+        assert int(np.abs(pcm).max()) == peak
+        np.testing.assert_array_equal(pcm, audio)
+
+    def test_float_input_still_normalised(self):
+        # float 経路は従来どおり：静かな float はピーク正規化される。
+        audio = (0.3 * _sine_wave(440, 16000, 0.05)).astype(np.float32)
+        buf = float_np_array_to_wav_buf(audio, 16000, f32=False)
+        pcm = self._read_int16_pcm(buf)
+        assert int(np.abs(pcm).max()) > 32000
+
+    def test_int16_clipped_not_wrapped(self):
+        # int16 範囲を超える値はラップせずクリップする（防御的）。
+        audio = np.array([40000, -40000, 1000], dtype=np.int32)
+        buf = float_np_array_to_wav_buf(audio, 16000, f32=False)
+        pcm = self._read_int16_pcm(buf)
+        assert pcm[0] == 32767
+        assert pcm[1] == -32768
+        assert pcm[2] == 1000
+
+
+# ---------------------------------------------------------------------------
 # save_audio
 # ---------------------------------------------------------------------------
 
@@ -255,6 +301,24 @@ class TestLoadAudio:
         p.write_bytes(data)
         result = load_audio(str(p), sr=16000, mono=True)
         assert result.ndim == 1
+
+    def test_mono_false_preserves_single_channel_input(self, tmp_path):
+        data = self._make_wav_bytes(sr=16000, duration=0.1)
+        p = tmp_path / "mono.wav"
+        p.write_bytes(data)
+        result = load_audio(str(p), sr=16000, mono=False)
+        assert result.ndim == 2
+        assert result.shape[0] == 1
+
+    def test_stereo_mono_false_preserves_two_channels(self, tmp_path):
+        mono = _sine_wave(440, 16000, 0.1)
+        stereo = np.stack([mono, mono * 0.5], axis=0)
+        buf = float_np_array_to_wav_buf(stereo, 16000, f32=False)
+        p = tmp_path / "stereo.wav"
+        p.write_bytes(buf.getvalue())
+        result = load_audio(str(p), sr=16000, mono=False)
+        assert result.ndim == 2
+        assert result.shape[0] == 2
 
     def test_float32_output(self, tmp_path):
         data = self._make_wav_bytes(sr=16000, duration=0.1)

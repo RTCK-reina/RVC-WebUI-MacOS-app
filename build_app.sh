@@ -164,8 +164,17 @@ mkdir -p "${RES_DIR}/rvc_backend" "${RES_DIR}/python"
 # before rsync. Without this, macOS Sequoia (14+) blocks rsync mkstempat with
 # EPERM when it tries to write into the .app bundle, failing Step 3 with
 # "Operation not permitted" on conda-pack output files.
+#
+# This MUST cover every tree we rsync/cp into the bundle below — not just
+# python_env + assets. A checkout that picked up provenance xattrs (e.g. files
+# that were quarantined/downloaded) would otherwise hit the same EPERM on the
+# configs/infer/rvc/i18n/tools rsync and the rpc_*.py copies, leaving a
+# partially populated .app.
 xattr -cr "${PYTHON_BUNDLE}" 2>/dev/null || true
-xattr -cr "${ROOT_DIR}/assets" 2>/dev/null || true
+for d in assets configs infer rvc i18n tools; do
+    xattr -cr "${ROOT_DIR}/${d}" 2>/dev/null || true
+done
+xattr -c "${ROOT_DIR}/rpc_server.py" "${ROOT_DIR}/rpc_training.py" 2>/dev/null || true
 
 # Python code (everything rpc_server.py imports).
 for d in configs infer rvc i18n tools; do

@@ -44,6 +44,8 @@ def _is_audio_file(path: str, *, strict: bool = False) -> bool:
 
 def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format0, cancel_event=None):
     infos = []
+    pre_fun = None  # so the finally cleanup doesn't UnboundLocalError when the
+    # separator model itself fails to construct (e.g. missing weights).
     try:
         inp_root = inp_root.strip(" ").strip('"').strip("\n").strip('"').strip(" ")
         save_root_vocal = (
@@ -148,15 +150,16 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
         infos.append(traceback.format_exc())
         yield "\n".join(infos)
     finally:
-        try:
-            if model_name == "onnx_dereverb_By_FoxJoy":
-                del pre_fun.pred.model
-                del pre_fun.pred.model_
-            else:
-                del pre_fun.model
-                del pre_fun
-        except:
-            traceback.print_exc()
+        if pre_fun is not None:
+            try:
+                if model_name == "onnx_dereverb_By_FoxJoy":
+                    del pre_fun.pred.model
+                    del pre_fun.pred.model_
+                else:
+                    del pre_fun.model
+                    del pre_fun
+            except:
+                traceback.print_exc()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             logger.info("Executed torch.cuda.empty_cache()")

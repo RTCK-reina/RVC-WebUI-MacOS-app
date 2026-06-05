@@ -80,6 +80,10 @@ def ensure_user_layout(user_dir: Path) -> None:
         "configs/inuse/v1",
         "configs/inuse/v2",
         "temp",
+        "cache",
+        "cache/fontconfig",
+        "cache/matplotlib",
+        "cache/numba",
     ]
     for sd in subdirs:
         (user_dir / sd).mkdir(parents=True, exist_ok=True)
@@ -110,6 +114,15 @@ def _populate_env_paths(base_dir: Path, user_dir: Path) -> None:
     os.environ["output_root"] = str(user_dir / "output")
     os.environ["input_root"] = str(user_dir / "input")
     os.environ["TEMP"] = str(user_dir / "temp")
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+    # macOS app launches and sandboxed subprocesses may not have writable
+    # user cache locations. librosa imports numba-cached functions during
+    # training; without an explicit cache dir it can abort with
+    # "cannot cache function ... no locator available" before training starts.
+    os.environ["XDG_CACHE_HOME"] = str(user_dir / "cache")
+    os.environ["MPLCONFIGDIR"] = str(user_dir / "cache" / "matplotlib")
+    os.environ["NUMBA_CACHE_DIR"] = str(user_dir / "cache" / "numba")
 
 
 @singleton_variable
@@ -227,14 +240,35 @@ class Config:
     # has_mps is only available in nightly pytorch (for now) and MasOS 12.3+.
     # check `getattr` and try it for compatibility
     @staticmethod
-    def has_mps() -> bool:
-        if not torch.backends.mps.is_available():
-            return False
+    def probe_mps() -> tuple[bool, str | None]:
+        mps = getattr(torch.backends, "mps", None)
+        if mps is None:
+            return False, "torch.backends.mps is not present"
+        try:
+            if not mps.is_built():
+                return False, "this PyTorch build does not include MPS"
+            if not mps.is_available():
+                try:
+                    torch.zeros(1).to(torch.device("mps"))
+                except Exception as e:
+                    return (
+                        False,
+                        "torch.backends.mps.is_available() returned False; "
+                        f"{type(e).__name__}: {e}",
+                    )
+                return False, "torch.backends.mps.is_available() returned False"
+        except Exception as e:
+            return False, str(e)
         try:
             torch.zeros(1).to(torch.device("mps"))
-            return True
+            return True, None
         except Exception:
-            return False
+            return False, "MPS tensor allocation failed"
+
+    @staticmethod
+    def has_mps() -> bool:
+        ok, _reason = Config.probe_mps()
+        return ok
 
     @staticmethod
     def has_xpu() -> bool:
@@ -259,6 +293,8 @@ class Config:
         logger.info("overwrite preprocess_per to %.1f" % (self.preprocess_per))
 
     def device_config(self):
+        self.mps_available, self.mps_error = self.probe_mps()
+
         if torch.cuda.is_available():
             if self.has_xpu():
                 self.device = self.instead = "xpu:0"
@@ -287,7 +323,7 @@ class Config:
             )
             if self.gpu_mem <= 4:
                 self.preprocess_per = 3.0
-        elif self.has_mps():
+        elif self.mps_available:
             logger.info("No supported Nvidia GPU found")
             self.device = self.instead = "mps"
             self.is_half = False
