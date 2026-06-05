@@ -38,9 +38,7 @@ def _try_load_onnx(pth_path: str, device: str):
             onnx_device = "cpu"
 
         model = OnnxSynthesizer(onnx_path, device=onnx_device)
-        logger.info(
-            "ONNX 推論を有効化: %s (device=%s)", onnx_path, onnx_device
-        )
+        logger.info("ONNX 推論を有効化: %s (device=%s)", onnx_path, onnx_device)
         return model
     except Exception:
         logger.warning(

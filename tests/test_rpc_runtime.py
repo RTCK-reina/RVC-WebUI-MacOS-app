@@ -13,6 +13,7 @@ tests/test_rpc_integration.py 側で end-to-end に検証している。
 
 conftest.py が torch をスタブするので real torch は不要。
 """
+
 from __future__ import annotations
 
 import json

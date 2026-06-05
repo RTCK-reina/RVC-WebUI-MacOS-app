@@ -86,7 +86,7 @@ class PreProcess:
     def pipeline(self, path, idx0):
         try:
             # Skip .DS_Store files
-            if os.path.basename(path) == '.DS_Store':
+            if os.path.basename(path) == ".DS_Store":
                 return None
 
             audio = load_audio(path, self.sr)

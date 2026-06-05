@@ -7,6 +7,7 @@ now_dir = os.getcwd()
 sys.path.append(now_dir)
 
 from infer.lib.audio import load_audio
+
 # Scoped compatibility helper: relaxes torch.load's weights_only default only
 # around fairseq's HuBERT loader. See infer/lib/torch_compat.py for rationale.
 from infer.lib.torch_compat import legacy_load

@@ -5,6 +5,7 @@ infer/lib/device.py のユニットテスト。
 テスト対象:
 - empty_device_cache: MPS 利用可否に応じた動作
 """
+
 from __future__ import annotations
 
 import sys
@@ -50,11 +51,14 @@ class TestEmptyDeviceCache:
                 mock_empty.assert_not_called()
 
     @pytest.mark.skipif(
-        not __import__("sys").modules.get("torch", MagicMock()).backends.mps.is_available(),
+        not __import__("sys")
+        .modules.get("torch", MagicMock())
+        .backends.mps.is_available(),
         reason="MPS not available on this machine",
     )
     def test_real_mps_empty_cache(self):
         """実際の MPS が存在する場合の結合テスト（Apple Silicon のみ実行）。"""
         import torch
+
         # 例外が出なければ OK
         torch.mps.empty_cache()

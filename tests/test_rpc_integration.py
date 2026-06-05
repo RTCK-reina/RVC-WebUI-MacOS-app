@@ -12,6 +12,7 @@ real torch が必要（スタブ torch の環境ではサーバが起動でき�
 - shutdown -> _cleanup_for_exit -> os._exit(0) で clean exit
 - SIGTERM（Swift killSync 経路）-> 同ハンドラで clean exit（デフォルト終了でない）
 """
+
 from __future__ import annotations
 
 import json
@@ -33,16 +34,18 @@ _REPO = Path(__file__).resolve().parent.parent
 
 def _env(userdir: str) -> dict:
     env = dict(os.environ)
-    env.update({
-        "RVC_BASE_DIR": str(_REPO),
-        "RVC_USER_DIR": userdir,
-        "weight_root": "assets/weights",
-        "weight_uvr5_root": "assets/uvr5_weights",
-        "index_root": "logs",
-        "outside_index_root": "assets/indices",
-        "rmvpe_root": "assets/rmvpe",
-        "PYTHONUNBUFFERED": "1",
-    })
+    env.update(
+        {
+            "RVC_BASE_DIR": str(_REPO),
+            "RVC_USER_DIR": userdir,
+            "weight_root": "assets/weights",
+            "weight_uvr5_root": "assets/uvr5_weights",
+            "index_root": "logs",
+            "outside_index_root": "assets/indices",
+            "rmvpe_root": "assets/rmvpe",
+            "PYTHONUNBUFFERED": "1",
+        }
+    )
     return env
 
 
@@ -52,13 +55,20 @@ class _Server:
     def __init__(self):
         self._userdir = tempfile.mkdtemp(prefix="rvc_itest_")
         self.proc = subprocess.Popen(
-            [sys.executable, "rpc_server.py"], cwd=str(_REPO), env=_env(self._userdir),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1,
+            [sys.executable, "rpc_server.py"],
+            cwd=str(_REPO),
+            env=_env(self._userdir),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
         )
         self.notes: list[str] = []
         self.responses: dict[int, dict] = {}
-        threading.Thread(target=lambda: [None for _ in self.proc.stderr], daemon=True).start()
+        threading.Thread(
+            target=lambda: [None for _ in self.proc.stderr], daemon=True
+        ).start()
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -77,7 +87,11 @@ class _Server:
 
     def send(self, id_, method, params=None):
         self.proc.stdin.write(
-            json.dumps({"jsonrpc": "2.0", "id": id_, "method": method, "params": params or {}}) + "\n")
+            json.dumps(
+                {"jsonrpc": "2.0", "id": id_, "method": method, "params": params or {}}
+            )
+            + "\n"
+        )
         self.proc.stdin.flush()
 
     def wait_response(self, id_, timeout=15):
@@ -106,6 +120,7 @@ class _Server:
             self.proc.kill()
             self.proc.wait()
         import shutil
+
         shutil.rmtree(self._userdir, ignore_errors=True)
 
 

@@ -208,7 +208,11 @@ class RVC:
                 feats0 = feats.clone()
 
         try:
-            if self.index is not None and self.big_npy is not None and self.index_rate > 0:
+            if (
+                self.index is not None
+                and self.big_npy is not None
+                and self.index_rate > 0
+            ):
                 npy = feats[0][skip_head // 2 :].cpu().numpy()
                 if self.is_half:
                     npy = npy.astype("float32")

@@ -12,6 +12,7 @@ GPU 不要・CPU のみで動作。
 - load_audio: WAV ファイルの読み込みと形状検証
 - get_audio_properties: チャンネル数・サンプルレート取得
 """
+
 from __future__ import annotations
 
 import io
@@ -40,6 +41,7 @@ try:
 except ImportError:
     # numba がなければ @jit を no-op デコレータに差し替える
     import types
+
     numba_stub = types.ModuleType("numba")
     numba_stub.jit = lambda *args, **kwargs: (lambda f: f)
     sys.modules.setdefault("numba", numba_stub)
@@ -60,6 +62,7 @@ except ImportError as e:
 # ヘルパー
 # ---------------------------------------------------------------------------
 
+
 def _sine_wave(freq: float, sr: int, duration: float) -> np.ndarray:
     """テスト用サイン波（mono float32, -1〜1）。"""
     t = np.linspace(0, duration, int(sr * duration), endpoint=False)
@@ -76,6 +79,7 @@ def _read_wav_header(buf: io.BytesIO) -> Tuple[int, int, int]:
 # ---------------------------------------------------------------------------
 # float_to_int16
 # ---------------------------------------------------------------------------
+
 
 class TestFloatToInt16:
     def test_output_dtype_is_int16(self):
@@ -122,6 +126,7 @@ class TestFloatToInt16:
 # float_np_array_to_wav_buf
 # ---------------------------------------------------------------------------
 
+
 class TestFloatNpArrayToWavBuf:
     def test_returns_bytesio(self):
         audio = _sine_wave(440, 16000, 0.1)
@@ -141,6 +146,7 @@ class TestFloatNpArrayToWavBuf:
         buf = float_np_array_to_wav_buf(audio, 16000, f32=True)
         buf.seek(0)
         import scipy.io.wavfile as wavfile
+
         sr, data = wavfile.read(buf)
         assert sr == 16000
         assert data.dtype == np.float32
@@ -171,6 +177,7 @@ class TestFloatNpArrayToWavBuf:
 # ---------------------------------------------------------------------------
 # int16 入力の音量保持（回帰ガード）
 # ---------------------------------------------------------------------------
+
 
 class TestInt16LoudnessPreservation:
     """int16 配列はそのまま（clip+cast）書き出され、ピーク正規化されないこと。
@@ -218,6 +225,7 @@ class TestInt16LoudnessPreservation:
 # save_audio
 # ---------------------------------------------------------------------------
 
+
 class TestSaveAudio:
     def test_saves_wav_file(self, tmp_path):
         audio = _sine_wave(440, 16000, 0.1)
@@ -239,6 +247,7 @@ class TestSaveAudio:
         path = str(tmp_path / "f32.wav")
         save_audio(path, audio, 16000, f32=True)
         import scipy.io.wavfile as wavfile
+
         sr, data = wavfile.read(path)
         assert sr == 16000
         assert data.dtype == np.float32
@@ -255,6 +264,7 @@ class TestSaveAudio:
 # ---------------------------------------------------------------------------
 # load_audio
 # ---------------------------------------------------------------------------
+
 
 class TestLoadAudio:
     def _make_wav_bytes(self, sr: int = 16000, duration: float = 0.1) -> bytes:
@@ -331,6 +341,7 @@ class TestLoadAudio:
 # ---------------------------------------------------------------------------
 # get_audio_properties
 # ---------------------------------------------------------------------------
+
 
 class TestGetAudioProperties:
     def _make_wav_file(self, tmp_path: Path, sr: int, channels: int) -> str:

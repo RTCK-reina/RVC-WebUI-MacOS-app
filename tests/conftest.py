@@ -7,12 +7,14 @@ Python sources can be imported without the full RVC conda environment.
 - 実際にはインストールされていない重量サードパーティ (torch, numpy 等) と、
   テストで使わない重量プロジェクトリーフモジュールのみをスタブ化する。
 """
+
 from __future__ import annotations
 
 import importlib.util
 import sys
 import types
 from unittest.mock import MagicMock
+
 
 # ---------------------------------------------------------------------------
 # torch スタブ
@@ -86,8 +88,13 @@ if "torch" not in sys.modules:
     sys.modules["torch.backends.cuda"] = _torch.backends.cuda
     sys.modules["torch.cuda"] = _torch.cuda
     sys.modules["torch.mps"] = _torch.mps
-    for _sub in ("torch.nn", "torch.nn.functional", "torch.optim",
-                 "torch.utils", "torch.utils.data"):
+    for _sub in (
+        "torch.nn",
+        "torch.nn.functional",
+        "torch.optim",
+        "torch.utils",
+        "torch.utils.data",
+    ):
         _stub(_sub)
 
 # --- numba (特殊: @jit デコレータが機能する必要がある) ---
@@ -96,10 +103,21 @@ if "numba" not in sys.modules:
 
 # --- 純粋なサードパーティスタブ (MagicMock で十分) ---
 for _m in [
-    "numpy", "scipy", "scipy.io", "scipy.io.wavfile", "scipy.signal",
-    "av", "av.audio", "av.audio.resampler", "av.audio.frame",
-    "librosa", "faiss", "psutil", "sounddevice",
-    "tqdm", "tqdm.auto",
+    "numpy",
+    "scipy",
+    "scipy.io",
+    "scipy.io.wavfile",
+    "scipy.signal",
+    "av",
+    "av.audio",
+    "av.audio.resampler",
+    "av.audio.frame",
+    "librosa",
+    "faiss",
+    "psutil",
+    "sounddevice",
+    "tqdm",
+    "tqdm.auto",
     "dotenv",
     "yaml",
     "colorama",
@@ -107,7 +125,8 @@ for _m in [
     "praat_parselmouth",
     "pyworld",
     "resampy",
-    "sklearn", "sklearn.cluster",
+    "sklearn",
+    "sklearn.cluster",
 ]:
     _stub(_m)
 

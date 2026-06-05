@@ -9,6 +9,7 @@
 4. DataLoader num_workers 設定 — hps.train.num_workers の読み込み
 5. UVR5 前処理並列化 — _preprocess_file の並列実行
 """
+
 from __future__ import annotations
 
 import sys
@@ -27,6 +28,7 @@ if _repo_root not in sys.path:
 # ---------------------------------------------------------------------------
 # 1. _make_providers のロジック検証（conftest のスタブ環境でも動く形で）
 # ---------------------------------------------------------------------------
+
 
 def _make_providers_impl(device: str):
     """rvc/onnx/infer.py の _make_providers と同一ロジック（ロードなしで検証）。"""
@@ -54,7 +56,10 @@ class TestMakeProviders:
         assert _make_providers_impl("cpu") == ["CPUExecutionProvider"]
 
     def test_cuda_provider(self):
-        assert _make_providers_impl("cuda") == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        assert _make_providers_impl("cuda") == [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
 
     def test_dml_provider(self):
         assert _make_providers_impl("dml") == ["DmlExecutionProvider"]
@@ -88,18 +93,26 @@ class TestOnnxSynthesizerInterface:
 
         class MockOnnxSynthesizer:
             """OnnxSynthesizer のシグネチャを模倣したモック。"""
+
             def __init__(self):
                 self.call_log = []
                 # 出力: [1, 1, 400] の float32 ゼロ配列を返す疑似結果
                 self._output = _np.zeros((1, 1, 400), dtype=_np.float32)
 
-            def infer(self, phone, phone_lengths, sid, pitch=None, pitchf=None, **kwargs):
-                self.call_log.append({
-                    "phone_shape": tuple(phone.shape) if hasattr(phone, "shape") else None,
-                    "pitch_is_none": pitch is None,
-                    "pitchf_is_none": pitchf is None,
-                })
+            def infer(
+                self, phone, phone_lengths, sid, pitch=None, pitchf=None, **kwargs
+            ):
+                self.call_log.append(
+                    {
+                        "phone_shape": (
+                            tuple(phone.shape) if hasattr(phone, "shape") else None
+                        ),
+                        "pitch_is_none": pitch is None,
+                        "pitchf_is_none": pitchf is None,
+                    }
+                )
                 import torch
+
                 return torch.from_numpy(self._output)
 
         return MockOnnxSynthesizer()
@@ -107,6 +120,7 @@ class TestOnnxSynthesizerInterface:
     def test_infer_signature_accepts_no_pitch(self):
         """pitch=None でも infer() が呼べること（f0 なしモデル向け）。"""
         import torch
+
         synth = self._make_mock_onnx_synthesizer()
         result = synth.infer(
             phone=torch.zeros(1, 10, 256),
@@ -130,7 +144,9 @@ class TestOnnxSynthesizerInterface:
 
     def test_onnx_result_index_pattern_in_source(self):
         """pipeline.py が result[0, 0] でアクセスするパターンがソースに含まれることを確認。"""
-        pipeline_path = Path(__file__).parent.parent / "infer" / "modules" / "vc" / "pipeline.py"
+        pipeline_path = (
+            Path(__file__).parent.parent / "infer" / "modules" / "vc" / "pipeline.py"
+        )
         source = pipeline_path.read_text()
         # ONNX 推論パスで [0, 0] アクセスが行われること
         assert "onnx_net_g.infer(" in source
@@ -141,6 +157,7 @@ class TestOnnxSynthesizerInterface:
 # 2. Pipeline.onnx_net_g — ONNX 推論パスの差し込み
 # ---------------------------------------------------------------------------
 
+
 class TestPipelineOnnxNetG:
     """Pipeline が onnx_net_g 属性を持ち、デフォルト None であることを確認。
 
@@ -150,8 +167,10 @@ class TestPipelineOnnxNetG:
 
     def _make_pipeline_mock(self):
         """Pipeline の onnx_net_g 属性を持つ最小モックを返す。"""
+
         class MinimalPipeline:
             """pipeline.py の Pipeline から onnx_net_g 属性だけを抽出した最小版。"""
+
             def __init__(self):
                 self.onnx_net_g = None  # ← 実装と同じ
 
@@ -171,22 +190,29 @@ class TestPipelineOnnxNetG:
 
     def test_onnx_net_g_attribute_in_pipeline_source(self):
         """pipeline.py のソースに onnx_net_g = None が含まれることを確認。"""
-        pipeline_path = Path(__file__).parent.parent / "infer" / "modules" / "vc" / "pipeline.py"
+        pipeline_path = (
+            Path(__file__).parent.parent / "infer" / "modules" / "vc" / "pipeline.py"
+        )
         source = pipeline_path.read_text()
-        assert "self.onnx_net_g = None" in source, \
-            "pipeline.py に onnx_net_g 属性が見つからない"
+        assert (
+            "self.onnx_net_g = None" in source
+        ), "pipeline.py に onnx_net_g 属性が見つからない"
 
     def test_onnx_branch_in_pipeline_source(self):
         """pipeline.py に onnx_net_g の分岐コードが含まれることを確認。"""
-        pipeline_path = Path(__file__).parent.parent / "infer" / "modules" / "vc" / "pipeline.py"
+        pipeline_path = (
+            Path(__file__).parent.parent / "infer" / "modules" / "vc" / "pipeline.py"
+        )
         source = pipeline_path.read_text()
-        assert "self.onnx_net_g is not None" in source, \
-            "pipeline.py に ONNX 推論分岐が見つからない"
+        assert (
+            "self.onnx_net_g is not None" in source
+        ), "pipeline.py に ONNX 推論分岐が見つからない"
 
 
 # ---------------------------------------------------------------------------
 # 3. Gradient Accumulation ロジックの検証
 # ---------------------------------------------------------------------------
+
 
 class TestGradientAccumulation:
     """accumulation_steps の is_update_step ロジックが正しいことを確認。"""
@@ -245,6 +271,7 @@ class TestGradientAccumulation:
 # 4. DataLoader num_workers 設定
 # ---------------------------------------------------------------------------
 
+
 class TestDataLoaderNumWorkers:
     """train.py の DataLoader num_workers 設定ロジックのテスト。"""
 
@@ -291,6 +318,7 @@ class TestDataLoaderNumWorkers:
 # 5. UVR5 前処理並列化
 # ---------------------------------------------------------------------------
 
+
 class TestUvr5ParallelPreprocess:
     """uvr5/modules.py の _preprocess_file が ThreadPoolExecutor で並列実行されることを確認。"""
 
@@ -331,6 +359,7 @@ class TestUvr5ParallelPreprocess:
 
     def test_preprocess_no_reformat_needed(self):
         """44100Hz/ステレオファイルはリフォーマット不要のフラグが False になること。"""
+
         # _preprocess_file のロジックをシミュレート
         def mock_get_properties(path):
             return 2, 44100  # channels=2, rate=44100
@@ -344,12 +373,15 @@ class TestUvr5ParallelPreprocess:
                 pass
             return inp_path + ".tmp", True
 
-        result_path, was_reformatted = preprocess_file("/audio/test.wav", mock_get_properties)
+        result_path, was_reformatted = preprocess_file(
+            "/audio/test.wav", mock_get_properties
+        )
         assert was_reformatted is False
         assert result_path == "/audio/test.wav"
 
     def test_preprocess_reformat_needed_for_wrong_rate(self):
         """非 44100Hz はリフォーマット必要のフラグが True になること。"""
+
         def mock_get_properties(path):
             return 2, 48000  # 48000Hz → 変換必要
 
@@ -394,6 +426,7 @@ class TestUvr5ParallelPreprocess:
         assert n_workers == 0
         # 空リストに pool.map を呼んでも問題ないが、実コードは事前チェックで回避する
         from concurrent.futures import ThreadPoolExecutor
+
         with ThreadPoolExecutor(max_workers=max(n_workers, 1)) as pool:
             results = list(pool.map(lambda p: (p, False), paths))
         assert results == []
@@ -402,6 +435,7 @@ class TestUvr5ParallelPreprocess:
 # ---------------------------------------------------------------------------
 # 6. _try_load_onnx フォールバック動作
 # ---------------------------------------------------------------------------
+
 
 class TestTryLoadOnnxFallback:
     """_try_load_onnx のフォールバック動作を検証する。
@@ -415,6 +449,7 @@ class TestTryLoadOnnxFallback:
         # .onnx ファイルを作成しない
         # onnx_path = pth_path と同じステム + ".onnx"
         import os
+
         onnx_path = os.path.splitext(pth_path)[0] + ".onnx"
         assert not os.path.exists(onnx_path)
 
@@ -434,6 +469,7 @@ class TestTryLoadOnnxFallback:
     def test_try_load_onnx_returns_none_on_import_error(self, tmp_path):
         """onnxruntime が未インストールの場合も None を返す。"""
         import os
+
         pth_path = str(tmp_path / "model.pth")
         onnx_path = str(tmp_path / "model.onnx")
         # ONNX ファイルを作成（ただし中身は不正）
@@ -475,6 +511,7 @@ class TestTryLoadOnnxFallback:
 # 7. accumulation_steps=0 エッジケース
 # ---------------------------------------------------------------------------
 
+
 class TestAccumulationStepsEdgeCases:
     """accumulation_steps のエッジケーステスト。"""
 
@@ -497,8 +534,7 @@ class TestAccumulationStepsEdgeCases:
         accumulation_steps = 100
         total_batches = 300
         update_count = sum(
-            1 for i in range(total_batches)
-            if (i + 1) % accumulation_steps == 0
+            1 for i in range(total_batches) if (i + 1) % accumulation_steps == 0
         )
         assert update_count == 3
 
