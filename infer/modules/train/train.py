@@ -34,6 +34,7 @@ def _check_cancel(hparams) -> None:
         # stat failed (fs race); ignore and try again next tick.
         pass
 
+
 now_dir = os.getcwd()
 sys.path.append(os.path.join(now_dir))
 # train.py lives at infer/modules/train/train.py; walk up 3 dirs to reach the
@@ -86,6 +87,7 @@ import torch.multiprocessing as mp
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+
 # tensorboard is intentionally not shipped in the macOS .app bundle
 # (requirements/app.txt drops tensorboard* to keep the env lean). We still
 # want the upstream training loop to run unmodified, so provide a no-op
@@ -93,6 +95,7 @@ from torch.utils.data import DataLoader
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
+
     class SummaryWriter:  # type: ignore[no-redef]
         """No-op tensorboard SummaryWriter for bundles without tensorboard."""
 
@@ -131,6 +134,7 @@ except ImportError:
 
         def close(self):
             pass
+
 
 from infer.lib.train.data_utils import (
     DistributedBucketSampler,
@@ -174,7 +178,9 @@ def _select_device():
     requested = os.environ.get("RVC_TRAIN_DEVICE", "").strip().lower()
     if requested in ("cpu", "mps"):
         if requested == "mps" and not _mps_available():
-            raise RuntimeError("RVC_TRAIN_DEVICE=mps was requested, but MPS is unavailable")
+            raise RuntimeError(
+                "RVC_TRAIN_DEVICE=mps was requested, but MPS is unavailable"
+            )
         return requested
     if requested.startswith("cuda"):
         if not torch.cuda.is_available():

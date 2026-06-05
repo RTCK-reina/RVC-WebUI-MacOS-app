@@ -135,12 +135,8 @@ class CascadedNet(nn.Module):
         if aggressiveness is not None:
             split_bin = aggressiveness["split_bin"]
             value = aggressiveness["value"]
-            mask[:, :, :split_bin] = torch.pow(
-                mask[:, :, :split_bin], 1 + value / 3
-            )
-            mask[:, :, split_bin:] = torch.pow(
-                mask[:, :, split_bin:], 1 + value
-            )
+            mask[:, :, :split_bin] = torch.pow(mask[:, :, :split_bin], 1 + value / 3)
+            mask[:, :, split_bin:] = torch.pow(mask[:, :, split_bin:], 1 + value)
         out = mask * mix
         if self.offset > 0:
             out = out[:, :, :, self.offset : -self.offset]

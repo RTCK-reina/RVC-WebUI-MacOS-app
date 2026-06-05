@@ -211,9 +211,7 @@ def load_audio(
                             frame_data, decoded_audio.shape[0], axis=0
                         )
                     elif decoded_audio.shape[0] == 1:
-                        decoded_audio = np.repeat(
-                            decoded_audio, frame_channels, axis=0
-                        )
+                        decoded_audio = np.repeat(decoded_audio, frame_channels, axis=0)
                     else:
                         raise ValueError(
                             "Audio channel count changed from "

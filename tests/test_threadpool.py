@@ -8,6 +8,7 @@ ThreadPool / 非同期パターンのユニットテスト（外部依存なし�
 - atexit 登録パターン
 - _blocking_executor のシングルスロット直列化
 """
+
 from __future__ import annotations
 
 import atexit
@@ -29,6 +30,7 @@ if _repo_root not in sys.path:
 # ---------------------------------------------------------------------------
 # Future キャンセルパターン（PR#5: batch cancel path）
 # ---------------------------------------------------------------------------
+
 
 class TestFutureCancellation:
     def test_cancel_not_started_future(self):
@@ -106,6 +108,7 @@ class TestFutureCancellation:
 # shutdown(cancel_futures=True) の互換性パターン（PR#7 の修正）
 # ---------------------------------------------------------------------------
 
+
 class TestShutdownCancelFutures:
     def test_shutdown_wait_false_does_not_block(self):
         """shutdown(wait=False) は in-flight タスクを待たずに返る。"""
@@ -161,6 +164,7 @@ class TestShutdownCancelFutures:
 # _blocking_executor: シングルスロット直列化の検証
 # ---------------------------------------------------------------------------
 
+
 class TestBlockingExecutorSerialization:
     def test_single_slot_serializes_calls(self):
         """max_workers=1 のエグゼキュータは同時に 1 タスクしか実行しない。"""
@@ -183,8 +187,7 @@ class TestBlockingExecutorSerialization:
             for f in futures:
                 f.result()
 
-        assert max_concurrent == 1, \
-            f"同時実行数が 1 を超えた: {max_concurrent}"
+        assert max_concurrent == 1, f"同時実行数が 1 を超えた: {max_concurrent}"
 
     def test_future_result_propagates_exception(self):
         """エグゼキュータのタスクが例外を投げると future.result() で再送出される。"""
@@ -197,6 +200,7 @@ class TestBlockingExecutorSerialization:
 # ---------------------------------------------------------------------------
 # atexit 登録パターン（PR#5: _blocking_executor の lifecycle 管理）
 # ---------------------------------------------------------------------------
+
 
 class TestAtexitRegistration:
     def test_atexit_register_shutdown_called(self):
@@ -234,6 +238,7 @@ class TestAtexitRegistration:
 # ---------------------------------------------------------------------------
 # キャンセルイベント伝播パターン（rpc_server._cancel_task 経由）
 # ---------------------------------------------------------------------------
+
 
 class TestCancelEventPropagation:
     def test_cancel_event_stops_iteration(self):

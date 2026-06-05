@@ -7,6 +7,7 @@ by the Swift side.
 
 No Gradio, no HTTP server, no network calls.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -140,6 +141,7 @@ import torch.nn.functional as F  # noqa: E402
 from configs import Config  # noqa: E402
 from infer.lib.audio import save_audio  # noqa: E402
 from infer.modules.vc import VC, show_info, hash_similarity  # noqa: E402
+
 # librosa is already pulled in transitively by the VC import above; bind it at
 # module scope so the real-time audio callback doesn't pay an import-system
 # lookup + import-lock on every block.
@@ -171,6 +173,7 @@ def _empty_device_cache() -> None:
             torch.mps.empty_cache()
     except Exception:
         pass
+
 
 # ---------------------------------------------------------------------------
 # Stdout writer -- every line is a single JSON object, flushed immediately.
@@ -324,6 +327,7 @@ def emit_progress(task_id: str, percent: float, message: str, phase: str = "") -
 
 import multiprocessing as _mp
 
+
 def _run_in_subprocess(
     target: callable,
     args: tuple,
@@ -351,8 +355,7 @@ def _run_in_subprocess(
         while proc.is_alive():
             if cancel_event.is_set():
                 force = bool(
-                    task is not None
-                    and getattr(task, "force_kill_requested", False)
+                    task is not None and getattr(task, "force_kill_requested", False)
                 )
                 if force:
                     proc.kill()  # skip the SIGTERM grace on a strong stop
@@ -416,7 +419,9 @@ class AppState:
         self.config.nocheck = True
         self.vc = VC(self.config)
         self.realtime = None  # Filled in during realtime_start.
-        self.active_status = "idle"  # idle / inferring / training / separating / realtime
+        self.active_status = (
+            "idle"  # idle / inferring / training / separating / realtime
+        )
 
     def status(self, s: str) -> None:
         self.active_status = s
@@ -463,13 +468,11 @@ def _resource_monitor(stop_event: threading.Event):
             try:
                 stats["cpu_percent"] = float(psutil.cpu_percent(interval=None))
                 vm = psutil.virtual_memory()
-                stats["memory_used_gb"] = round(vm.used / 1024 ** 3, 2)
-                stats["memory_total_gb"] = round(vm.total / 1024 ** 3, 2)
+                stats["memory_used_gb"] = round(vm.used / 1024**3, 2)
+                stats["memory_total_gb"] = round(vm.total / 1024**3, 2)
                 stats["memory_percent"] = float(vm.percent)
                 proc = psutil.Process(os.getpid())
-                stats["process_memory_gb"] = round(
-                    proc.memory_info().rss / 1024 ** 3, 2
-                )
+                stats["process_memory_gb"] = round(proc.memory_info().rss / 1024**3, 2)
             except Exception:
                 pass
 
@@ -487,13 +490,17 @@ def _resource_monitor(stop_event: threading.Event):
                 try:
                     total = torch.mps.recommended_max_memory()
                     stats["gpu_memory_total_mb"] = int(total / (1024 * 1024))
-                    stats["gpu_percent"] = round(driver / total * 100, 1) if total > 0 else 0.0
+                    stats["gpu_percent"] = (
+                        round(driver / total * 100, 1) if total > 0 else 0.0
+                    )
                 except Exception:
                     # Fallback: use system memory as upper bound for unified memory.
                     if psutil:
                         total = psutil.virtual_memory().total
                         stats["gpu_memory_total_mb"] = int(total / (1024 * 1024))
-                        stats["gpu_percent"] = round(driver / total * 100, 1) if total > 0 else 0.0
+                        stats["gpu_percent"] = (
+                            round(driver / total * 100, 1) if total > 0 else 0.0
+                        )
                 stats["gpu_backend"] = "mps"
             elif torch.cuda.is_available():
                 used = torch.cuda.memory_allocated()
@@ -503,7 +510,9 @@ def _resource_monitor(stop_event: threading.Event):
                     torch.cuda.memory_reserved() / (1024 * 1024)
                 )
                 stats["gpu_memory_total_mb"] = int(total / (1024 * 1024))
-                stats["gpu_percent"] = round(used / total * 100, 1) if total > 0 else 0.0
+                stats["gpu_percent"] = (
+                    round(used / total * 100, 1) if total > 0 else 0.0
+                )
                 stats["gpu_backend"] = "cuda"
             else:
                 stats["gpu_backend"] = "cpu"
@@ -618,7 +627,10 @@ def _timestamp() -> str:
 
 
 def _default_output_path(input_path: str, model_sid: str, fmt: str, subdir: str) -> str:
-    out_root = Path(os.environ.get("output_root") or (Path.home() / "Documents" / "RVC-Swift" / "output"))
+    out_root = Path(
+        os.environ.get("output_root")
+        or (Path.home() / "Documents" / "RVC-Swift" / "output")
+    )
     out_dir = out_root / subdir
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(input_path).stem
@@ -710,7 +722,12 @@ def rpc_vc_multi(params: dict) -> dict:
     paths = params.get("paths", []) or []
     fmt = params.get("format", "flac")
     out_root = params.get("output_dir") or str(
-        Path(os.environ.get("output_root") or (Path.home() / "Documents" / "RVC-Swift" / "output")) / "batch" / _timestamp()
+        Path(
+            os.environ.get("output_root")
+            or (Path.home() / "Documents" / "RVC-Swift" / "output")
+        )
+        / "batch"
+        / _timestamp()
     )
     Path(out_root).mkdir(parents=True, exist_ok=True)
 
@@ -768,8 +785,18 @@ def rpc_vc_multi(params: dict) -> dict:
         app_state.status("idle")
 
 
-def _uvr5_worker(queue, model_name, inp_root, save_root_vocal, input_paths,
-                  save_root_ins, agg, fmt, polish_model, scratch_dir):
+def _uvr5_worker(
+    queue,
+    model_name,
+    inp_root,
+    save_root_vocal,
+    input_paths,
+    save_root_ins,
+    agg,
+    fmt,
+    polish_model,
+    scratch_dir,
+):
     """Subprocess entry point for UVR5 separation.
 
     Runs the full separation (+ optional polish) and posts results/progress
@@ -797,15 +824,20 @@ def _uvr5_worker(queue, model_name, inp_root, save_root_vocal, input_paths,
         # --- Pass 1 -------------------------------------------------------
         faux_paths = [_Faux(p) for p in input_paths]
         done = 0
-        for msg in uvr(model_name, inp_root, save_root_vocal, faux_paths,
-                       save_root_ins, agg, fmt):
+        for msg in uvr(
+            model_name, inp_root, save_root_vocal, faux_paths, save_root_ins, agg, fmt
+        ):
             messages.append(msg)
             done = min(total, msg.count("->"))
-            queue.put({"progress": (
-                (done / total) * pass1_scale,
-                f"({done}/{total}) 分離中…",
-                "separation",
-            )})
+            queue.put(
+                {
+                    "progress": (
+                        (done / total) * pass1_scale,
+                        f"({done}/{total}) 分離中…",
+                        "separation",
+                    )
+                }
+            )
 
         # --- Pass 2 (polish) ----------------------------------------------
         polished_dir = None
@@ -850,15 +882,27 @@ def _uvr5_worker(queue, model_name, inp_root, save_root_vocal, input_paths,
                 p_total = max(1, len(scratch_paths))
                 try:
                     p_done = 0
-                    for msg in uvr(polish_model, "", polished_dir,
-                                   polish_faux, residue_dir, agg, fmt):
+                    for msg in uvr(
+                        polish_model,
+                        "",
+                        polished_dir,
+                        polish_faux,
+                        residue_dir,
+                        agg,
+                        fmt,
+                    ):
                         messages.append(msg)
                         p_done = min(p_total, msg.count("->"))
-                        queue.put({"progress": (
-                            pass1_scale + (p_done / p_total) * (100 - pass1_scale),
-                            f"仕上げ中 ({p_done}/{p_total})",
-                            "separation",
-                        )})
+                        queue.put(
+                            {
+                                "progress": (
+                                    pass1_scale
+                                    + (p_done / p_total) * (100 - pass1_scale),
+                                    f"仕上げ中 ({p_done}/{p_total})",
+                                    "separation",
+                                )
+                            }
+                        )
                 finally:
                     shutil.rmtree(scratch_dir, ignore_errors=True)
 
@@ -892,6 +936,7 @@ def rpc_uvr5(params: dict) -> dict:
         Path(os.environ.get("output_root") or "") / "separation" / "accompaniment"
     )
     from datetime import datetime as _dt
+
     session_stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
     save_root_vocal = str(Path(base_vocal) / session_stamp)
     save_root_ins = str(Path(base_ins) / session_stamp)
@@ -912,9 +957,11 @@ def rpc_uvr5(params: dict) -> dict:
     app_state.status("separating")
 
     from infer.modules.uvr5.modules import _is_audio_file
+
     if inp_root:
         input_paths = [
-            str(p) for p in Path(inp_root).iterdir()
+            str(p)
+            for p in Path(inp_root).iterdir()
             if p.is_file() and _is_audio_file(p.name, strict=True)
         ]
     else:
@@ -924,8 +971,17 @@ def rpc_uvr5(params: dict) -> dict:
     try:
         result = _run_in_subprocess(
             _uvr5_worker,
-            (model_name, inp_root, save_root_vocal, input_paths,
-             save_root_ins, agg, fmt, polish_model, scratch_dir),
+            (
+                model_name,
+                inp_root,
+                save_root_vocal,
+                input_paths,
+                save_root_ins,
+                agg,
+                fmt,
+                polish_model,
+                scratch_dir,
+            ),
             cancel_event=task.cancel_event,
             task_id=task_id,
             task=task,
@@ -1063,22 +1119,26 @@ def _sr_key(raw_sr) -> str:
 
 def rpc_model_merge(params: dict) -> dict:
     task_id = params.get("task_id", f"model_merge_{int(time.time()*1000)}")
-    return _require_success(_run_with_progress(
-        task_id, "merge",
-        merge,
-        params["path_a"],
-        params["path_b"],
-        float(params.get("alpha", 0.5)),
-        # merge() stores sr verbatim as the model's metadata and (for raw
-        # G_*.pth inputs) indexes its config table by it, so it must be the
-        # string key — not the int 40000 — to stay consistent with every
-        # other model producer.
-        _sr_key(params.get("sr", "40k")),
-        int(params.get("if_f0", 1)),
-        params.get("info", ""),
-        params.get("name", ""),
-        params.get("version", "v2"),
-    ), "モデルのマージ")
+    return _require_success(
+        _run_with_progress(
+            task_id,
+            "merge",
+            merge,
+            params["path_a"],
+            params["path_b"],
+            float(params.get("alpha", 0.5)),
+            # merge() stores sr verbatim as the model's metadata and (for raw
+            # G_*.pth inputs) indexes its config table by it, so it must be the
+            # string key — not the int 40000 — to stay consistent with every
+            # other model producer.
+            _sr_key(params.get("sr", "40k")),
+            int(params.get("if_f0", 1)),
+            params.get("info", ""),
+            params.get("name", ""),
+            params.get("version", "v2"),
+        ),
+        "モデルのマージ",
+    )
 
 
 def rpc_model_extract(params: dict) -> dict:
@@ -1087,17 +1147,21 @@ def rpc_model_extract(params: dict) -> dict:
     # because it indexes into hard-coded config tables keyed by that string.
     # Accept either int (Hz) or already-formatted string from the caller.
     sr_key = _sr_key(params.get("sr", "40k"))
-    return _require_success(_run_with_progress(
-        task_id, "extract",
-        extract_small_model,
-        params["ckpt_path"],
-        params.get("name", ""),
-        params.get("author", ""),
-        sr_key,
-        int(params.get("if_f0", 1)),
-        params.get("info", ""),
-        params.get("version", "v2"),
-    ), "モデルの抽出")
+    return _require_success(
+        _run_with_progress(
+            task_id,
+            "extract",
+            extract_small_model,
+            params["ckpt_path"],
+            params.get("name", ""),
+            params.get("author", ""),
+            sr_key,
+            int(params.get("if_f0", 1)),
+            params.get("info", ""),
+            params.get("version", "v2"),
+        ),
+        "モデルの抽出",
+    )
 
 
 def rpc_export_onnx(params: dict) -> dict:
@@ -1112,8 +1176,11 @@ def rpc_export_onnx(params: dict) -> dict:
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     task_id = params.get("task_id", f"export_onnx_{int(time.time()*1000)}")
     result = _run_with_progress(
-        task_id, "onnx",
-        export_onnx, ckpt_path, output_path,
+        task_id,
+        "onnx",
+        export_onnx,
+        ckpt_path,
+        output_path,
     )
     if result.get("status") == "cancelled":
         return result
@@ -1158,13 +1225,23 @@ def rpc_list_audio_devices(params: dict) -> dict:
 # Realtime VC — streams audio through RVC using sounddevice.
 # ---------------------------------------------------------------------------
 
+
 class _RealtimeVC:
     """Manages the sounddevice stream and per-block RVC inference."""
 
-    def __init__(self, rvc_obj, samplerate: int, channels,
-                 block_time: float, threshold: float, f0method: str,
-                 protect: float, device_str: str,
-                 input_device=None, output_device=None):
+    def __init__(
+        self,
+        rvc_obj,
+        samplerate: int,
+        channels,
+        block_time: float,
+        threshold: float,
+        f0method: str,
+        protect: float,
+        device_str: str,
+        input_device=None,
+        output_device=None,
+    ):
         import sounddevice as sd
         import torchaudio.transforms as tat
 
@@ -1198,10 +1275,14 @@ class _RealtimeVC:
         self._input_device_name = "unknown"
         self._output_device_name = "unknown"
         self._input_device_index = (
-            int(input_device) if isinstance(input_device, int) and input_device >= 0 else -1
+            int(input_device)
+            if isinstance(input_device, int) and input_device >= 0
+            else -1
         )
         self._output_device_index = (
-            int(output_device) if isinstance(output_device, int) and output_device >= 0 else -1
+            int(output_device)
+            if isinstance(output_device, int) and output_device >= 0
+            else -1
         )
 
         zc = samplerate // 100
@@ -1214,27 +1295,44 @@ class _RealtimeVC:
         self.sola_search_frame = zc
         extra_time = 2.5
         self.extra_frame = int(np.round(extra_time * samplerate / zc)) * zc
-        total_len = (self.extra_frame + self.crossfade_frame
-                     + self.sola_search_frame + self.block_frame)
+        total_len = (
+            self.extra_frame
+            + self.crossfade_frame
+            + self.sola_search_frame
+            + self.block_frame
+        )
         self.input_wav = torch.zeros(total_len, device=device_str, dtype=torch.float32)
         self.input_wav_res = torch.zeros(
-            160 * total_len // zc, device=device_str, dtype=torch.float32)
+            160 * total_len // zc, device=device_str, dtype=torch.float32
+        )
         self.rms_buffer = np.zeros(4 * zc, dtype="float32")
         self.sola_buffer = torch.zeros(
-            self.sola_buffer_frame, device=device_str, dtype=torch.float32)
+            self.sola_buffer_frame, device=device_str, dtype=torch.float32
+        )
         # Pre-allocated constant kernel for the SOLA crossfade denominator.
         # sola_buffer_frame is fixed for the session, so allocating this once
         # avoids a per-block device allocation on the real-time audio thread.
         self.sola_ones = torch.ones(
-            1, 1, self.sola_buffer_frame, device=device_str, dtype=torch.float32)
+            1, 1, self.sola_buffer_frame, device=device_str, dtype=torch.float32
+        )
         self.skip_head = self.extra_frame // zc
         self.return_length = (
             self.block_frame + self.sola_buffer_frame + self.sola_search_frame
         ) // zc
         self.fade_in_window = (
-            torch.sin(0.5 * np.pi * torch.linspace(
-                0.0, 1.0, steps=self.sola_buffer_frame,
-                device=device_str, dtype=torch.float32)) ** 2)
+            torch.sin(
+                0.5
+                * np.pi
+                * torch.linspace(
+                    0.0,
+                    1.0,
+                    steps=self.sola_buffer_frame,
+                    device=device_str,
+                    dtype=torch.float32,
+                )
+            )
+            ** 2
+        )
         self.fade_out_window = 1 - self.fade_in_window
         self.resampler = tat.Resample(
             orig_freq=samplerate, new_freq=16000, dtype=torch.float32
@@ -1266,26 +1364,33 @@ class _RealtimeVC:
             else:
                 in_idx, out_idx = None, None
             if in_idx is not None and in_idx >= 0:
-                self._input_device_name = sd.query_devices(in_idx).get("name", "unknown")
+                self._input_device_name = sd.query_devices(in_idx).get(
+                    "name", "unknown"
+                )
                 self._input_device_index = int(in_idx)
             if out_idx is not None and out_idx >= 0:
-                self._output_device_name = sd.query_devices(out_idx).get("name", "unknown")
+                self._output_device_name = sd.query_devices(out_idx).get(
+                    "name", "unknown"
+                )
                 self._output_device_index = int(out_idx)
         except Exception:
             logger.exception("failed to resolve active device names")
 
         try:
-            send_notification("realtime_event", {
-                "timestamp": time.time(),
-                "level": "info",
-                "kind": "started",
-                "message": (
-                    f"started — in:{self._input_device_name} "
-                    f"out:{self._output_device_name} "
-                    f"sr:{samplerate} block:{block_time:.3f}s "
-                    f"thresh:{threshold}dB f0:{f0method}"
-                ),
-            })
+            send_notification(
+                "realtime_event",
+                {
+                    "timestamp": time.time(),
+                    "level": "info",
+                    "kind": "started",
+                    "message": (
+                        f"started — in:{self._input_device_name} "
+                        f"out:{self._output_device_name} "
+                        f"sr:{samplerate} block:{block_time:.3f}s "
+                        f"thresh:{threshold}dB f0:{f0method}"
+                    ),
+                },
+            )
         except Exception:
             pass
 
@@ -1297,10 +1402,14 @@ class _RealtimeVC:
         # is the output choppy" — we surface cumulative counts to the UI.
         if status:
             try:
-                if status.input_underflow:  self._cb_input_underflow  += 1
-                if status.input_overflow:   self._cb_input_overflow   += 1
-                if status.output_underflow: self._cb_output_underflow += 1
-                if status.output_overflow:  self._cb_output_overflow  += 1
+                if status.input_underflow:
+                    self._cb_input_underflow += 1
+                if status.input_overflow:
+                    self._cb_input_overflow += 1
+                if status.output_underflow:
+                    self._cb_output_underflow += 1
+                if status.output_overflow:
+                    self._cb_output_overflow += 1
                 if getattr(status, "priming_output", False):
                     self._cb_priming_output += 1
             except Exception:
@@ -1325,29 +1434,35 @@ class _RealtimeVC:
                 rms = librosa.feature.rms(
                     y=indata_mono, frame_length=4 * self.zc, hop_length=self.zc
                 )[:, 2:]
-                self.rms_buffer[:] = indata_mono[-4 * self.zc:]
-                indata_mono = indata_mono[2 * self.zc - self.zc // 2:]
-                db_thresh = (
-                    librosa.amplitude_to_db(rms, ref=1.0)[0] < self.threshold)
+                self.rms_buffer[:] = indata_mono[-4 * self.zc :]
+                indata_mono = indata_mono[2 * self.zc - self.zc // 2 :]
+                db_thresh = librosa.amplitude_to_db(rms, ref=1.0)[0] < self.threshold
                 for i in range(db_thresh.shape[0]):
                     if db_thresh[i]:
-                        indata_mono[i * self.zc:(i + 1) * self.zc] = 0
-                indata_mono = indata_mono[self.zc // 2:]
+                        indata_mono[i * self.zc : (i + 1) * self.zc] = 0
+                indata_mono = indata_mono[self.zc // 2 :]
                 # True only when the gate zeroed every sub-block — lets the UI
                 # distinguish "ゲート作動で意図的に無音" from "マイクが何も拾ってない".
                 gated_all = bool(db_thresh.all())
             self._last_is_gated = gated_all
 
             # Shift input buffer
-            self.input_wav[:-self.block_frame] = self.input_wav[self.block_frame:].clone()
-            self.input_wav[-indata_mono.shape[0]:] = torch.from_numpy(indata_mono).to(
-                self.device_str)
+            self.input_wav[: -self.block_frame] = self.input_wav[
+                self.block_frame :
+            ].clone()
+            self.input_wav[-indata_mono.shape[0] :] = torch.from_numpy(indata_mono).to(
+                self.device_str
+            )
 
             # Resample to 16k
-            self.input_wav_res[:-self.block_frame_16k] = (
-                self.input_wav_res[self.block_frame_16k:].clone())
-            self.input_wav_res[-160 * (indata_mono.shape[0] // self.zc + 1):] = (
-                self.resampler(self.input_wav[-indata_mono.shape[0] - 2 * self.zc:])[160:])
+            self.input_wav_res[: -self.block_frame_16k] = self.input_wav_res[
+                self.block_frame_16k :
+            ].clone()
+            self.input_wav_res[-160 * (indata_mono.shape[0] // self.zc + 1) :] = (
+                self.resampler(self.input_wav[-indata_mono.shape[0] - 2 * self.zc :])[
+                    160:
+                ]
+            )
 
             # RVC inference
             _infer_start = time.perf_counter()
@@ -1365,19 +1480,26 @@ class _RealtimeVC:
 
             # SOLA crossfade
             conv_input = infer_wav[
-                None, None, :self.sola_buffer_frame + self.sola_search_frame]
+                None, None, : self.sola_buffer_frame + self.sola_search_frame
+            ]
             cor_nom = F.conv1d(conv_input, self.sola_buffer[None, None, :])
-            cor_den = torch.sqrt(
-                F.conv1d(conv_input ** 2, self.sola_ones) + 1e-8)
+            cor_den = torch.sqrt(F.conv1d(conv_input**2, self.sola_ones) + 1e-8)
             sola_offset = torch.argmax(cor_nom[0, 0] / cor_den[0, 0]).item()
             infer_wav = infer_wav[sola_offset:]
-            infer_wav[:self.sola_buffer_frame] *= self.fade_in_window
-            infer_wav[:self.sola_buffer_frame] += self.sola_buffer * self.fade_out_window
+            infer_wav[: self.sola_buffer_frame] *= self.fade_in_window
+            infer_wav[: self.sola_buffer_frame] += (
+                self.sola_buffer * self.fade_out_window
+            )
             self.sola_buffer[:] = infer_wav[
-                self.block_frame:self.block_frame + self.sola_buffer_frame]
+                self.block_frame : self.block_frame + self.sola_buffer_frame
+            ]
             outdata[:] = (
-                infer_wav[:self.block_frame]
-                .repeat(self.out_channels, 1).t().cpu().numpy())
+                infer_wav[: self.block_frame]
+                .repeat(self.out_channels, 1)
+                .t()
+                .cpu()
+                .numpy()
+            )
             self._error_count = 0  # Reset on success.
 
             # Post-render output peak/RMS.
@@ -1398,16 +1520,22 @@ class _RealtimeVC:
             if self._error_count >= 10 and not self._error_notified:
                 self._error_notified = True
                 try:
-                    send_notification("realtime_error", {
-                        "error": str(exc),
-                        "count": self._error_count,
-                    })
-                    send_notification("realtime_event", {
-                        "timestamp": time.time(),
-                        "level": "error",
-                        "kind": "callback_error",
-                        "message": f"推論コールバック例外が連続発生: {exc}",
-                    })
+                    send_notification(
+                        "realtime_error",
+                        {
+                            "error": str(exc),
+                            "count": self._error_count,
+                        },
+                    )
+                    send_notification(
+                        "realtime_event",
+                        {
+                            "timestamp": time.time(),
+                            "level": "error",
+                            "kind": "callback_error",
+                            "message": f"推論コールバック例外が連続発生: {exc}",
+                        },
+                    )
                 except Exception:
                     pass
 
@@ -1427,6 +1555,7 @@ class _RealtimeVC:
         just does Queue.put so no blocking I/O on the real-time thread.
         Peak accumulators reset here so the UI sees per-emit max, not lifetime max.
         """
+
         def _safe_db(peak_lin: float) -> float:
             return 20.0 * float(np.log10(max(peak_lin, 1e-7)))
 
@@ -1442,7 +1571,8 @@ class _RealtimeVC:
             "inference_ms": round(self._last_inference_ms, 2),
             "block_ms": round(self._last_block_ms, 2),
             "block_time_budget_ms": round(
-                self.block_frame / self.samplerate * 1000.0, 2),
+                self.block_frame / self.samplerate * 1000.0, 2
+            ),
             "error_count": int(self._error_count),
             "callback_flags": {
                 "input_underflow": int(self._cb_input_underflow),
@@ -1479,12 +1609,15 @@ class _RealtimeVC:
         self.rvc = None
         _empty_device_cache()
         try:
-            send_notification("realtime_event", {
-                "timestamp": time.time(),
-                "level": "info",
-                "kind": "stopped",
-                "message": "session stopped",
-            })
+            send_notification(
+                "realtime_event",
+                {
+                    "timestamp": time.time(),
+                    "level": "info",
+                    "kind": "stopped",
+                    "message": "session stopped",
+                },
+            )
         except Exception:
             pass
 
@@ -1545,7 +1678,10 @@ def rpc_realtime_start(params: dict) -> dict:
                     "error": f"Selected input device has no input channels: {input_device}",
                 }
         except Exception as e:
-            return {"status": "error", "error": f"Invalid input device {input_device}: {e}"}
+            return {
+                "status": "error",
+                "error": f"Invalid input device {input_device}: {e}",
+            }
     if output_device is not None:
         try:
             output_info = sd.query_devices(output_device)
@@ -1555,13 +1691,17 @@ def rpc_realtime_start(params: dict) -> dict:
                     "error": f"Selected output device has no output channels: {output_device}",
                 }
         except Exception as e:
-            return {"status": "error", "error": f"Invalid output device {output_device}: {e}"}
+            return {
+                "status": "error",
+                "error": f"Invalid output device {output_device}: {e}",
+            }
 
     device = app_state.config.device
     is_half = app_state.config.is_half
 
     try:
         from infer.lib.rtrvc import RVC
+
         rvc_obj = RVC(
             key=pitch,
             formant=formant,
@@ -1652,12 +1792,16 @@ def rpc_realtime_update_params(params: dict) -> dict:
         updated["index_rate"] = params["index_rate"]
     if updated:
         try:
-            send_notification("realtime_event", {
-                "timestamp": time.time(),
-                "level": "info",
-                "kind": "params_updated",
-                "message": "updated: " + ", ".join(f"{k}={v}" for k, v in updated.items()),
-            })
+            send_notification(
+                "realtime_event",
+                {
+                    "timestamp": time.time(),
+                    "level": "info",
+                    "kind": "params_updated",
+                    "message": "updated: "
+                    + ", ".join(f"{k}={v}" for k, v in updated.items()),
+                },
+            )
         except Exception:
             pass
     return {"status": "updated"}

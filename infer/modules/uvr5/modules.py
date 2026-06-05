@@ -16,8 +16,18 @@ config = Config()
 
 # File extensions to accept as audio input.
 _AUDIO_EXTS = {
-    ".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus",
-    ".aac", ".aiff", ".aif", ".wma", ".mp4", ".mov",
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".m4a",
+    ".ogg",
+    ".opus",
+    ".aac",
+    ".aiff",
+    ".aif",
+    ".wma",
+    ".mp4",
+    ".mov",
 }
 
 
@@ -42,7 +52,16 @@ def _is_audio_file(path: str, *, strict: bool = False) -> bool:
     return ext in _AUDIO_EXTS
 
 
-def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format0, cancel_event=None):
+def uvr(
+    model_name,
+    inp_root,
+    save_root_vocal,
+    paths,
+    save_root_ins,
+    agg,
+    format0,
+    cancel_event=None,
+):
     infos = []
     pre_fun = None  # so the finally cleanup doesn't UnboundLocalError when the
     # separator model itself fails to construct (e.g. missing weights).
@@ -128,9 +147,7 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                 yield "\n".join(infos)
                 return
             try:
-                pre_fun._path_audio_(
-                    inp_path, save_root_ins, save_root_vocal, format0
-                )
+                pre_fun._path_audio_(inp_path, save_root_ins, save_root_vocal, format0)
                 infos.append("%s->Success" % (os.path.basename(inp_path)))
                 yield "\n".join(infos)
             except:

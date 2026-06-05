@@ -9,6 +9,7 @@ rpc_server.py の純粋 Python ロジックのユニットテスト。
 - send_response / send_error / send_notification: JSON-RPC フォーマット
 - _dispatch: メソッド不在エラー
 """
+
 from __future__ import annotations
 
 import json
@@ -31,10 +32,10 @@ if _repo_root not in sys.path:
 
 import rpc_server  # noqa: E402  (conftest stub 後にimport)
 
-
 # ---------------------------------------------------------------------------
 # _list_files
 # ---------------------------------------------------------------------------
+
 
 class TestListFiles:
     def test_empty_dir_returns_empty(self, tmp_path):
@@ -92,6 +93,7 @@ class TestListFiles:
 # Task / タスク管理
 # ---------------------------------------------------------------------------
 
+
 class TestTask:
     def setup_method(self):
         """各テスト前にタスクレジストリをクリア。"""
@@ -105,6 +107,7 @@ class TestTask:
 
     def test_task_has_started_at(self):
         import time
+
         before = time.time()
         t = rpc_server.Task("t")
         after = time.time()
@@ -187,7 +190,9 @@ class TestTask:
         rpc_server._cancel_task("with-sentinel")
         assert task.sentinel_path.exists()
 
-    def test_cancel_task_sentinel_touch_tolerates_permission_error(self, tmp_path, monkeypatch):
+    def test_cancel_task_sentinel_touch_tolerates_permission_error(
+        self, tmp_path, monkeypatch
+    ):
         """sentinel の touch に失敗しても cancel 経路自体は動き続ける。"""
         task = rpc_server._register_task("sentinel-fail")
         task.sentinel_path = tmp_path / ".cancel"
@@ -215,6 +220,7 @@ class TestTask:
 # ---------------------------------------------------------------------------
 # emit_progress — パーセントクランプ
 # ---------------------------------------------------------------------------
+
 
 class TestEmitProgress:
     def _captured_notifications(self):
@@ -275,6 +281,7 @@ class TestEmitProgress:
 # send_response / send_error / send_notification — JSON-RPC フォーマット
 # ---------------------------------------------------------------------------
 
+
 class TestJsonRpcMessages:
     def setup_method(self):
         q = rpc_server._write_queue
@@ -329,6 +336,7 @@ class TestJsonRpcMessages:
 # _dispatch — メソッド不在エラー
 # ---------------------------------------------------------------------------
 
+
 class TestDispatch:
     def setup_method(self):
         q = rpc_server._write_queue
@@ -361,8 +369,9 @@ class TestDispatch:
 
         with patch.dict(rpc_server.METHODS, {"test_nb": fake_fn}):
             # BLOCKING_METHODS に含まれないので直接呼ばれる
-            rpc_server._dispatch({"jsonrpc": "2.0", "id": 9, "method": "test_nb",
-                                   "params": {"x": 1}})
+            rpc_server._dispatch(
+                {"jsonrpc": "2.0", "id": 9, "method": "test_nb", "params": {"x": 1}}
+            )
 
         assert called_with == [{"x": 1}]
         msgs = self._get_messages()
@@ -371,6 +380,7 @@ class TestDispatch:
 
     def test_rpc_exception_returns_error(self):
         """メソッドが例外を投げると -32603 エラーが返る。"""
+
         def bad_fn(params):
             raise RuntimeError("test error")
 
@@ -388,11 +398,13 @@ class TestDispatch:
 # _timestamp ユーティリティ
 # ---------------------------------------------------------------------------
 
+
 class TestTimestamp:
     def test_format(self):
         ts = rpc_server._timestamp()
         # YYYYMMDD_HHMMSS 形式
         import re
+
         assert re.match(r"^\d{8}_\d{6}$", ts), f"不正なフォーマット: {ts!r}"
 
 
@@ -431,6 +443,7 @@ class TestTerminateProcs:
     def _import_rpc_training(self):
         # conftest で既に必要なスタブは入っている前提
         import rpc_training
+
         return rpc_training
 
     def test_empty_list_returns_empty_result(self):
@@ -465,12 +478,16 @@ class TestTerminateProcs:
         try:
             result = rt._terminate_procs([p], graceful_wait=0.0)
         finally:
-            try: p.wait(timeout=3)
-            except Exception: pass
+            try:
+                p.wait(timeout=3)
+            except Exception:
+                pass
         elapsed = _time.monotonic() - start
         # Primary assertions — functional correctness.
         assert p.poll() is not None, "process should have exited"
-        assert result["residual"] == [], f"residual PIDs after force kill: {result['residual']}"
+        assert (
+            result["residual"] == []
+        ), f"residual PIDs after force kill: {result['residual']}"
         # Secondary assertion — sanity bound on wall time to catch the
         # "graceful_wait=0 got ignored" regression without being flaky
         # on contended CI runners.
@@ -482,10 +499,13 @@ class TestTerminateProcs:
         monkeypatch.setattr(rt, "psutil", None)
         # SIGTERM を無視するプログラム
         p = _subprocess.Popen(
-            [_sys.executable, "-c",
-             "import signal, time;"
-             "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
-             "time.sleep(60)"],
+            [
+                _sys.executable,
+                "-c",
+                "import signal, time;"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                "time.sleep(60)",
+            ],
             start_new_session=True,
             stdout=_subprocess.DEVNULL,
             stderr=_subprocess.DEVNULL,
@@ -496,8 +516,10 @@ class TestTerminateProcs:
         try:
             result = rt._terminate_procs([p], graceful_wait=0.5)
         finally:
-            try: p.wait(timeout=3)
-            except Exception: pass
+            try:
+                p.wait(timeout=3)
+            except Exception:
+                pass
         elapsed = _time.monotonic() - start
         # graceful 0.5 秒 + SIGKILL + verify（最大 2 秒）
         assert elapsed < 3.5, f"kill took {elapsed:.2f}s"
@@ -548,8 +570,10 @@ class TestTerminateProcs:
             assert child_gone, f"子プロセス {child_pid} が消えていない"
             assert parent.poll() is not None
         finally:
-            try: parent.wait(timeout=3)
-            except Exception: pass
+            try:
+                parent.wait(timeout=3)
+            except Exception:
+                pass
             try:
                 # 念のため後始末
                 if parent.poll() is None:
@@ -580,6 +604,7 @@ class TestTerminateProcs:
             force_kill_requested = True
 
         import tempfile
+
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / "t.log"
             log.write_text("")
@@ -587,14 +612,20 @@ class TestTerminateProcs:
             cancel_event.set()
             try:
                 rt._tail_log_until_done(
-                    log, done_event, "test-force",
+                    log,
+                    done_event,
+                    "test-force",
                     emit_progress=lambda *_a, **_kw: None,
-                    cancel_event=cancel_event, proc=p, phase="test",
+                    cancel_event=cancel_event,
+                    proc=p,
+                    phase="test",
                     task=_FakeTask(),
                 )
             finally:
-                try: p.wait(timeout=3)
-                except Exception: pass
+                try:
+                    p.wait(timeout=3)
+                except Exception:
+                    pass
 
         assert captured.get("graceful_wait") == 0.0, (
             f"force_kill_requested=True 時は graceful_wait=0.0 を期待、"
@@ -612,11 +643,16 @@ class TestTerminateProcs:
             captured["graceful_wait"] = graceful_wait
             # テスト高速化のため即刻 kill
             import signal as _sig
+
             for p in procs:
-                try: _os.killpg(_os.getpgid(p.pid), _sig.SIGKILL)
-                except OSError: pass
-                try: p.wait(timeout=2)
-                except Exception: pass
+                try:
+                    _os.killpg(_os.getpgid(p.pid), _sig.SIGKILL)
+                except OSError:
+                    pass
+                try:
+                    p.wait(timeout=2)
+                except Exception:
+                    pass
             return {"killed": [], "residual": []}
 
         monkeypatch.setattr(rt, "_terminate_procs", spy)
@@ -629,20 +665,27 @@ class TestTerminateProcs:
             force_kill_requested = False
 
         import tempfile
+
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / "t.log"
             log.write_text("")
             cancel_event.set()
             try:
                 rt._tail_log_until_done(
-                    log, done_event, "test-soft",
+                    log,
+                    done_event,
+                    "test-soft",
                     emit_progress=lambda *_a, **_kw: None,
-                    cancel_event=cancel_event, proc=p, phase="test",
+                    cancel_event=cancel_event,
+                    proc=p,
+                    phase="test",
                     task=_FakeTask(),
                 )
             finally:
-                try: p.wait(timeout=3)
-                except Exception: pass
+                try:
+                    p.wait(timeout=3)
+                except Exception:
+                    pass
 
         assert captured.get("graceful_wait") == 3.0
 
@@ -654,6 +697,7 @@ class TestTerminateProcs:
 # ライフサイクル（_cancel_task が touch する / 存在すれば _check_cancel
 # 相当のロジックがファイル検出できる）のみ軽量に検証する。
 # ---------------------------------------------------------------------------
+
 
 class TestCancelSentinel:
     def setup_method(self):
@@ -697,6 +741,7 @@ class TestCancelSentinel:
         内で再定義し、rpc_server 側の touch 結果と噛み合うことを確認。
         """
         import types
+
         sentinel = tmp_path / ".cancel"
         hp = types.SimpleNamespace(cancel_sentinel=str(sentinel))
 
