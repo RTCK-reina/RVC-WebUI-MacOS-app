@@ -640,10 +640,14 @@ _AUDIO_OUTPUT_FORMATS = ("flac", "wav", "mp3", "m4a")
 
 
 def _output_root() -> Path:
-    return Path(
-        os.environ.get("output_root")
-        or (Path.home() / "Documents" / "RVC-WebUI" / "output")
-    ).expanduser().resolve()
+    return (
+        Path(
+            os.environ.get("output_root")
+            or (Path.home() / "Documents" / "RVC-WebUI" / "output")
+        )
+        .expanduser()
+        .resolve()
+    )
 
 
 def _index_roots() -> list[Path]:
@@ -678,7 +682,9 @@ def _require_existing_file(value: object, field: str) -> str:
     return str(path)
 
 
-def _default_output_path(input_path: str, model_sid: str, fmt: str, subdir: str) -> Path:
+def _default_output_path(
+    input_path: str, model_sid: str, fmt: str, subdir: str
+) -> Path:
     out_root = _output_root()
     out_dir = out_root / subdir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -692,11 +698,13 @@ def rpc_vc_single(params: dict) -> dict:
     sid = params["sid"]
     input_path = _require_existing_file(params["input_audio_path"], "input_audio_path")
     fmt = safe_format(params.get("format", "flac"), _AUDIO_OUTPUT_FORMATS)
-    file_index = _resolve_under_any(_index_roots(), params.get("file_index", ""), "file_index")
-    file_index2 = _resolve_under_any(_index_roots(), params.get("file_index2", ""), "file_index2")
-    default_output = _default_output_path(
-        input_path, sid, fmt, "inference"
+    file_index = _resolve_under_any(
+        _index_roots(), params.get("file_index", ""), "file_index"
     )
+    file_index2 = _resolve_under_any(
+        _index_roots(), params.get("file_index2", ""), "file_index2"
+    )
+    default_output = _default_output_path(input_path, sid, fmt, "inference")
     output_path = optional_file_under(
         _output_root(), params.get("output_path"), "output_path", default=default_output
     )
@@ -775,8 +783,12 @@ def rpc_vc_multi(params: dict) -> dict:
     dir_path = params.get("dir_path", "") or ""
     paths = params.get("paths", []) or []
     fmt = safe_format(params.get("format", "flac"), _AUDIO_OUTPUT_FORMATS)
-    file_index = _resolve_under_any(_index_roots(), params.get("file_index", ""), "file_index")
-    file_index2 = _resolve_under_any(_index_roots(), params.get("file_index2", ""), "file_index2")
+    file_index = _resolve_under_any(
+        _index_roots(), params.get("file_index", ""), "file_index"
+    )
+    file_index2 = _resolve_under_any(
+        _index_roots(), params.get("file_index2", ""), "file_index2"
+    )
     out_root = optional_dir_under(
         _output_root(),
         params.get("output_dir"),
@@ -792,12 +804,13 @@ def rpc_vc_multi(params: dict) -> dict:
         if dir_path:
             input_dir = Path(dir_path).expanduser().resolve()
             if not input_dir.is_dir():
-                raise PathValidationError(f"dir_path does not exist or is not a directory: {dir_path}")
+                raise PathValidationError(
+                    f"dir_path does not exist or is not a directory: {dir_path}"
+                )
             all_paths = [str(p) for p in input_dir.iterdir() if p.is_file()]
         else:
             all_paths = [
-                _require_existing_file(p, f"paths[{i}]")
-                for i, p in enumerate(paths)
+                _require_existing_file(p, f"paths[{i}]") for i, p in enumerate(paths)
             ]
         total = len(all_paths)
         if total == 0:
@@ -1024,10 +1037,14 @@ def rpc_uvr5(params: dict) -> dict:
     if inp_root:
         inp_dir = Path(inp_root).expanduser().resolve()
         if not inp_dir.is_dir():
-            return {"status": "error", "error": f"Input directory not found: {inp_root}"}
+            return {
+                "status": "error",
+                "error": f"Input directory not found: {inp_root}",
+            }
         inp_root = str(inp_dir)
         input_paths = [
-            str(p) for p in inp_dir.iterdir()
+            str(p)
+            for p in inp_dir.iterdir()
             if p.is_file() and _is_audio_file(p.name, strict=True)
         ]
     else:
@@ -1106,7 +1123,11 @@ def rpc_model_info(params: dict) -> dict:
     path = params["path"]
     info = show_info(path)
     status = "error" if info.lstrip().startswith("Traceback") else "success"
-    return {"status": status, "info": info, "error": info if status == "error" else None}
+    return {
+        "status": status,
+        "info": info,
+        "error": info if status == "error" else None,
+    }
 
 
 def rpc_model_change_info(params: dict) -> dict:
@@ -1719,7 +1740,9 @@ def rpc_realtime_start(params: dict) -> dict:
 
     weight_root = require_env_root("weight_root")
     pth_path = _resolve_under_any([weight_root], params.get("pth_path", ""), "pth_path")
-    index_path = _resolve_under_any(_index_roots(), params.get("index_path", ""), "index_path")
+    index_path = _resolve_under_any(
+        _index_roots(), params.get("index_path", ""), "index_path"
+    )
     pitch = params.get("pitch", 0)
     formant = params.get("formant", 0)
     index_rate = params.get("index_rate", 0)

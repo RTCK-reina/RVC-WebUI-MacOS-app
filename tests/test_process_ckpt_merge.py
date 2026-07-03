@@ -162,7 +162,9 @@ def test_merge_extracts_raw_training_ckpt(tmp_path, monkeypatch, real_process_ck
     assert loaded["author"] == "Carol & Dave"
 
 
-def test_user_weight_path_rejects_path_traversal(tmp_path, monkeypatch, real_process_ckpt):
+def test_user_weight_path_rejects_path_traversal(
+    tmp_path, monkeypatch, real_process_ckpt
+):
     mod, _torch = real_process_ckpt
     monkeypatch.setenv("weight_root", str(tmp_path / "models"))
 

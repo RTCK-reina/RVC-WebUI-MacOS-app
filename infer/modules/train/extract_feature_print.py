@@ -153,6 +153,8 @@ else:
             failures.append(file)
             printt("%s-feature-fail-%s" % (file, traceback.format_exc()))
     if failures:
-        printt("feature extraction failed for %s file(s): %s" % (len(failures), failures))
+        printt(
+            "feature extraction failed for %s file(s): %s" % (len(failures), failures)
+        )
         raise SystemExit(1)
     printt("all-feature-done")

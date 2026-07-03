@@ -407,31 +407,21 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
                 logger.info("loaded pretrained %s" % (hps.pretrainG))
             if hasattr(net_g, "module"):
                 logger.info(
-                    net_g.module.load_state_dict(
-                        load_weights(hps.pretrainG)["model"]
-                    )
+                    net_g.module.load_state_dict(load_weights(hps.pretrainG)["model"])
                 )  ##测试不加载优化器
             else:
                 logger.info(
-                    net_g.load_state_dict(
-                        load_weights(hps.pretrainG)["model"]
-                    )
+                    net_g.load_state_dict(load_weights(hps.pretrainG)["model"])
                 )  ##测试不加载优化器
         if hps.pretrainD != "":
             if rank == 0:
                 logger.info("loaded pretrained %s" % (hps.pretrainD))
             if hasattr(net_d, "module"):
                 logger.info(
-                    net_d.module.load_state_dict(
-                        load_weights(hps.pretrainD)["model"]
-                    )
+                    net_d.module.load_state_dict(load_weights(hps.pretrainD)["model"])
                 )
             else:
-                logger.info(
-                    net_d.load_state_dict(
-                        load_weights(hps.pretrainD)["model"]
-                    )
-                )
+                logger.info(net_d.load_state_dict(load_weights(hps.pretrainD)["model"]))
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
         optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str - 2
