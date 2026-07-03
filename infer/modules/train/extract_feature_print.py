@@ -115,6 +115,7 @@ if len(todo) == 0:
     printt("no-feature-todo")
 else:
     printt("all-feature-%s" % len(todo))
+    failures = []
     for idx, file in enumerate(todo):
         try:
             if file.endswith(".wav"):
@@ -148,6 +149,10 @@ else:
                     printt("%s-contains nan" % file)
                 if idx % n == 0:
                     printt("now-%s,all-%s,%s,%s" % (len(todo), idx, file, feats.shape))
-        except:
-            printt(traceback.format_exc())
+        except Exception:
+            failures.append(file)
+            printt("%s-feature-fail-%s" % (file, traceback.format_exc()))
+    if failures:
+        printt("feature extraction failed for %s file(s): %s" % (len(failures), failures))
+        raise SystemExit(1)
     printt("all-feature-done")

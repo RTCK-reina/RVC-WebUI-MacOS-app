@@ -6,6 +6,7 @@ from scipy.fft import fft
 from pybase16384 import encode_to_string, decode_from_string
 
 from configs import CPUConfig, singleton_variable
+from infer.lib.safe_torch_load import load_weights
 from rvc.synthesizer import get_synthesizer
 
 from .pipeline import Pipeline
@@ -150,7 +151,7 @@ def model_hash_ckpt(cpt):
 
 
 def model_hash_from(path):
-    cpt = torch.load(path, map_location="cpu")
+    cpt = load_weights(path, map_location="cpu")
     h = model_hash_ckpt(cpt)
     del cpt
     return h

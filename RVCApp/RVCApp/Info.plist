@@ -31,7 +31,7 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>リアルタイム音声変換でマイクを使用します。</string>
     <key>NSDocumentsFolderUsageDescription</key>
-    <string>~/Documents/RVC-Swift にモデル・入出力ファイルを保存します。</string>
+    <string>~/Documents/RVC-WebUI にモデル・入出力ファイルを保存します。</string>
     <key>NSRequiresAquaSystemAppearance</key>
     <false/>
     <key>NSSupportsAutomaticTermination</key>

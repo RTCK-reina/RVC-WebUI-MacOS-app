@@ -8,6 +8,7 @@ import numpy as np
 from infer.lib.audio import save_audio
 import torch
 
+from infer.lib.safe_torch_load import load_weights
 from infer.lib.uvr5_pack.lib_v5 import nets_123821KB as Nets
 from infer.lib.uvr5_pack.lib_v5 import spec_utils
 from infer.lib.uvr5_pack.lib_v5.model_param_init import ModelParameters
@@ -37,7 +38,7 @@ class AudioPre:
         else:
             mp = ModelParameters("infer/lib/uvr5_pack/lib_v5/modelparams/4band_v2.json")
             model = Nets.CascadedASPPNet(mp.param["bins"] * 2)
-        cpk = torch.load(model_path, map_location="cpu")
+        cpk = load_weights(model_path, map_location="cpu")
         model.load_state_dict(cpk)
         model.eval()
         if is_half:

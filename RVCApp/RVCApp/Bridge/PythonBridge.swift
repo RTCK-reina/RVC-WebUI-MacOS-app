@@ -140,7 +140,7 @@ final class PythonBridge: ObservableObject {
     private var stderrTail = ""
     private let stderrTailMaxLen = 8192
     /// Log file mirroring stderr for post-mortem debugging. Lives under
-    /// ~/Library/Logs/RVC-Swift/.
+    /// ~/Library/Logs/RVC-WebUI/.
     private var logFileHandle: FileHandle?
 
     // MARK: - Public lifecycle
@@ -149,7 +149,7 @@ final class PythonBridge: ObservableObject {
     ///  - `pythonExec`: absolute path to the bundled python3 binary
     ///  - `serverScript`: absolute path to rpc_server.py
     ///  - `baseDir`: read-only bundle dir (Contents/Resources)
-    ///  - `userDir`: writable per-user dir (~/Documents/RVC-Swift by default)
+    ///  - `userDir`: writable per-user dir (~/Documents/RVC-WebUI by default)
     func start(
         pythonExec: String,
         serverScript: String,
@@ -274,7 +274,7 @@ final class PythonBridge: ObservableObject {
     /// actually see what went wrong.
     private func enrichLaunchError(_ error: Error) -> Error {
         let tail = String(stderrTail.suffix(1500))
-        let logHint = "ログ: ~/Library/Logs/RVC-Swift/bridge.log\n\n" +
+        let logHint = "ログ: ~/Library/Logs/\(AppState.userDirectoryName)/bridge.log\n\n" +
             "--- Python stderr (末尾) ---\n\(tail)"
         switch error {
         case PythonBridgeError.timeout:
@@ -534,6 +534,15 @@ final class PythonBridge: ObservableObject {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in
                 pendingRequests[id] = cont
+                // If the caller was cancelled before we registered, onCancel has
+                // already fired against an empty map and will never fire again —
+                // resume here or the continuation would dangle forever.
+                if Task.isCancelled {
+                    if pendingRequests.removeValue(forKey: id) != nil {
+                        cont.resume(throwing: CancellationError())
+                    }
+                    return
+                }
                 do {
                     try writeHandle.write(contentsOf: payload)
                 } catch {
@@ -748,7 +757,7 @@ final class PythonBridge: ObservableObject {
         closeLogFile()
         let fm = FileManager.default
         let libLogs = fm.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Logs/RVC-Swift", isDirectory: true)
+            .appendingPathComponent("Logs/\(AppState.userDirectoryName)", isDirectory: true)
         guard let dir = libLogs else { return }
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("bridge.log")

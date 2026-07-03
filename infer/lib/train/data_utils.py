@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.utils.data
 
+from infer.lib.safe_torch_load import load_weights
 from infer.lib.train.mel_processing import spectrogram_torch
 from infer.lib.train.utils import load_filepaths_and_text, load_wav_to_torch
 
@@ -111,8 +112,8 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         spec_filename = filename.replace(".wav", ".spec.pt")
         if os.path.exists(spec_filename):
             try:
-                spec = torch.load(spec_filename, weights_only=True)
-            except:
+                spec = load_weights(spec_filename)
+            except Exception:
                 logger.warning("%s %s", spec_filename, traceback.format_exc())
                 spec = spectrogram_torch(
                     audio_norm,
@@ -303,8 +304,8 @@ class TextAudioLoader(torch.utils.data.Dataset):
         spec_filename = filename.replace(".wav", ".spec.pt")
         if os.path.exists(spec_filename):
             try:
-                spec = torch.load(spec_filename)
-            except:
+                spec = load_weights(spec_filename)
+            except Exception:
                 logger.warning("%s %s", spec_filename, traceback.format_exc())
                 spec = spectrogram_torch(
                     audio_norm,

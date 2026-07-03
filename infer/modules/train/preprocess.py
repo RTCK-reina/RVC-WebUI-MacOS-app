@@ -58,6 +58,8 @@ class PreProcess:
 
     def norm_write(self, tmp_audio, idx0, idx1):
         tmp_max = np.abs(tmp_audio).max()
+        if tmp_max <= 0:
+            raise ValueError("audio segment is silent")
         if tmp_max > 2.5:
             print("%s-%s-%s-filtered" % (idx0, idx1, tmp_max))
             return
@@ -113,14 +115,19 @@ class PreProcess:
                         break
                 self.norm_write(tmp_audio, idx0, idx1)
             println("%s\t-> Success" % path)
-            return audio
+            return True
         except Exception as e:
-            print(f"{path}\t-> {str(e)}")
-            return None
+            println("%s\t-> Fail. %s" % (path, traceback.format_exc()))
+            return False
 
     def pipeline_mp(self, infos):
+        failures = []
         for path, idx0 in infos:
-            self.pipeline(path, idx0)
+            if not self.pipeline(path, idx0):
+                failures.append(path)
+        if failures:
+            println("preprocess failed for %s file(s): %s" % (len(failures), failures))
+            raise SystemExit(1)
 
     def pipeline_mp_inp_dir(self, inp_root, n_p):
         try:
@@ -141,8 +148,14 @@ class PreProcess:
                     p.start()
                 for i in range(n_p):
                     ps[i].join()
-        except:
+                bad = [p.exitcode for p in ps if p.exitcode not in (0, None)]
+                if bad:
+                    raise RuntimeError(
+                        "preprocess worker(s) failed with exit codes: %s" % bad
+                    )
+        except Exception:
             println("Fail. %s" % traceback.format_exc())
+            raise
 
 
 def preprocess_trainset(inp_root, sr, n_p, exp_dir, per):

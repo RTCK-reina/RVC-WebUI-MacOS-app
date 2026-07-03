@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from scipy.io.wavfile import read
 
+from infer.lib.safe_torch_load import load_weights
+
 MATPLOTLIB_FLAG = False
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -26,7 +28,7 @@ import matplotlib.pylab as plt
 
 def load_checkpoint(checkpoint_path, model, optimizer=None, load_opt=1):
     assert os.path.isfile(checkpoint_path)
-    checkpoint_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    checkpoint_dict = load_weights(checkpoint_path)
 
     saved_state_dict = checkpoint_dict["model"]
     if hasattr(model, "module"):
@@ -45,7 +47,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, load_opt=1):
                     saved_state_dict[k].shape,
                 )  #
                 raise KeyError
-        except:
+        except (KeyError, AttributeError):
             # logger.info(traceback.format_exc())
             logger.info("%s is not in the checkpoint", k)  # pretrain缺失的
             new_state_dict[k] = v  # 模型自带的随机值
@@ -145,7 +147,7 @@ def plot_spectrogram_to_numpy(spectrogram):
         data = data.reshape(fig.canvas.get_width_height()[::-1] + (4,))[
             :, :, :3
         ]  # 只取前三个通道（RGB）
-    except:
+    except Exception:
         data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep="")
         data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
     plt.close()
@@ -180,7 +182,7 @@ def plot_alignment_to_numpy(alignment, info=None):
         data = data.reshape(fig.canvas.get_width_height()[::-1] + (4,))[
             :, :, :3
         ]  # 只取前三个通道（RGB）
-    except:
+    except Exception:
         data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep="")
         data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
     plt.close()

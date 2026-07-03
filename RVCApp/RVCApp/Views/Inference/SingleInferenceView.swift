@@ -86,7 +86,7 @@ struct SingleInferenceView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text("単一推論")
                 .font(.title2).bold()
-            Text("音声ファイルを選んで、指定のモデルで変換します。結果は ~/Documents/RVC-Swift/output/inference/ に保存されます。")
+            Text("音声ファイルを選んで、指定のモデルで変換します。結果は ~/Documents/RVC-WebUI/output/inference/ に保存されます。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

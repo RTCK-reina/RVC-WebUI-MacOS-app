@@ -174,10 +174,20 @@ struct SeparationView: View {
                             label: "ボーカル出力先",
                             path: $outputVocal, chooseDirectory: true,
                             initialDir: defaultVocalDir)
+                        if let vocalOutputError {
+                            Label(vocalOutputError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                         FilePickerField(
                             label: "伴奏出力先",
                             path: $outputIns, chooseDirectory: true,
                             initialDir: defaultInsDir)
+                        if let accompanimentOutputError {
+                            Label(accompanimentOutputError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                         HStack {
                             Text("Aggression").font(.caption).foregroundStyle(.secondary)
                                 .frame(width: 120, alignment: .leading)
@@ -203,7 +213,9 @@ struct SeparationView: View {
                 .disabled(isRunning
                     || modelName.isEmpty
                     || (dirPath.isEmpty && paths.isEmpty)
-                    || (polishEnabled && polishModel.isEmpty))
+                    || (polishEnabled && polishModel.isEmpty)
+                    || vocalOutputError != nil
+                    || accompanimentOutputError != nil)
 
                 if !taskID.isEmpty {
                     ProgressBarView(taskID: taskID, title: "分離中", onCancel: cancel)
@@ -420,6 +432,18 @@ struct SeparationView: View {
         (bridge.initialInfo?["paths"]?["output_root"]?.stringValue).flatMap {
             $0 + "/separation/accompaniment"
         }
+    }
+
+    private var outputRoot: String? {
+        bridge.initialInfo?["paths"]?["output_root"]?.stringValue
+    }
+
+    private var vocalOutputError: String? {
+        PathValidation.outputRootError(outputVocal, root: outputRoot, label: "ボーカル出力先")
+    }
+
+    private var accompanimentOutputError: String? {
+        PathValidation.outputRootError(outputIns, root: outputRoot, label: "伴奏出力先")
     }
 
     private func run() async {

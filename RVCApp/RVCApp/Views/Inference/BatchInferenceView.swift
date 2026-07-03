@@ -93,6 +93,11 @@ struct BatchInferenceView: View {
                             path: $outputDir,
                             chooseDirectory: true,
                             initialDir: defaultOutputDir)
+                        if let outputDirError {
+                            Label(outputDirError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                         Picker("出力形式", selection: $format) {
                             ForEach(formats, id: \.self) { Text($0.uppercased()).tag($0) }
                         }
@@ -121,7 +126,10 @@ struct BatchInferenceView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isRunning || selectedModel.isEmpty || (dirPath.isEmpty && paths.isEmpty))
+                .disabled(isRunning
+                    || selectedModel.isEmpty
+                    || (dirPath.isEmpty && paths.isEmpty)
+                    || outputDirError != nil)
 
                 if !taskID.isEmpty {
                     ProgressBarView(taskID: taskID, title: "バッチ推論中", onCancel: cancel)
@@ -207,6 +215,13 @@ struct BatchInferenceView: View {
 
     private var defaultOutputDir: String? {
         bridge.initialInfo?["paths"]?["output_root"]?.stringValue
+    }
+
+    private var outputDirError: String? {
+        PathValidation.outputRootError(
+            outputDir,
+            root: defaultOutputDir,
+            label: "出力ディレクトリ")
     }
 
     private func sliderRow(_ label: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, _ step: Double, _ fmt: String = "%.2f") -> some View {

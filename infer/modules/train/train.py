@@ -163,6 +163,7 @@ from infer.lib.train.losses import (
     generator_loss,
     kl_loss,
 )
+from infer.lib.safe_torch_load import load_weights
 from infer.lib.train.mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from infer.lib.train.process_ckpt import save_small_model
 
@@ -275,7 +276,7 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
                 world_size=n_gpus,
                 rank=rank,
             )
-        except:
+        except Exception:
             dist.init_process_group(
                 backend="gloo",
                 init_method="env://?use_libuv=False",
@@ -407,17 +408,13 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
             if hasattr(net_g, "module"):
                 logger.info(
                     net_g.module.load_state_dict(
-                        torch.load(
-                            hps.pretrainG, map_location="cpu", weights_only=True
-                        )["model"]
+                        load_weights(hps.pretrainG)["model"]
                     )
                 )  ##测试不加载优化器
             else:
                 logger.info(
                     net_g.load_state_dict(
-                        torch.load(
-                            hps.pretrainG, map_location="cpu", weights_only=True
-                        )["model"]
+                        load_weights(hps.pretrainG)["model"]
                     )
                 )  ##测试不加载优化器
         if hps.pretrainD != "":
@@ -426,17 +423,13 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
             if hasattr(net_d, "module"):
                 logger.info(
                     net_d.module.load_state_dict(
-                        torch.load(
-                            hps.pretrainD, map_location="cpu", weights_only=True
-                        )["model"]
+                        load_weights(hps.pretrainD)["model"]
                     )
                 )
             else:
                 logger.info(
                     net_d.load_state_dict(
-                        torch.load(
-                            hps.pretrainD, map_location="cpu", weights_only=True
-                        )["model"]
+                        load_weights(hps.pretrainD)["model"]
                     )
                 )
 

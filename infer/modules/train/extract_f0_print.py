@@ -64,6 +64,7 @@ class FeatureInput(object):
             hop_size,
             samplerate,
         )
+        self.failures = []
 
     def _post_process_f0(self, f0):
         """Apply the same post-processing as Generator.calculate (f0_up_key=0, x_pad=0)."""
@@ -106,8 +107,12 @@ class FeatureInput(object):
                 )
                 np.save(opt_path2, feature_pit, allow_pickle=False)
                 np.save(opt_path1, coarse_pit, allow_pickle=False)
-            except:
+            except Exception:
+                self.failures.append(inp_path)
                 printt("f0fail-%s-%s-%s" % (idx, inp_path, traceback.format_exc()))
+        if self.failures:
+            printt("f0 failed for %s file(s): %s" % (len(self.failures), self.failures))
+            raise SystemExit(1)
 
     def _go_batched(self, paths, n):
         """Batch RMVPE inference: accumulate files, run model once per batch."""
@@ -144,7 +149,8 @@ class FeatureInput(object):
                     wavs.append(x)
                     p_lens.append(x.shape[0] // self.hop)
                     valid.append((idx, inp_path, opt_path1, opt_path2))
-                except:
+                except Exception:
+                    self.failures.append(inp_path)
                     printt("f0fail-%s-%s-%s" % (idx, inp_path, traceback.format_exc()))
 
             if not wavs:
@@ -154,7 +160,7 @@ class FeatureInput(object):
                 f0_list = rmvpe.compute_f0_batch(
                     wavs, p_lens=p_lens, filter_radius=0.03
                 )
-            except:
+            except Exception:
                 printt("f0batch-fail-%s" % traceback.format_exc())
                 # Fallback to sequential on batch failure.
                 for idx, inp_path, opt_path1, opt_path2 in valid:
@@ -165,7 +171,8 @@ class FeatureInput(object):
                         )
                         np.save(opt_path2, feature_pit, allow_pickle=False)
                         np.save(opt_path1, coarse_pit, allow_pickle=False)
-                    except:
+                    except Exception:
+                        self.failures.append(inp_path)
                         printt(
                             "f0fail-%s-%s-%s" % (idx, inp_path, traceback.format_exc())
                         )
@@ -178,8 +185,12 @@ class FeatureInput(object):
                     np.save(opt_path1, coarse_pit, allow_pickle=False)
                     if idx % n == 0:
                         printt("f0ing,now-%s,all-%s,-%s" % (idx, len(paths), inp_path))
-                except:
+                except Exception:
+                    self.failures.append(inp_path)
                     printt("f0fail-%s-%s-%s" % (idx, inp_path, traceback.format_exc()))
+        if self.failures:
+            printt("f0 failed for %s file(s): %s" % (len(self.failures), self.failures))
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":
@@ -216,3 +227,7 @@ if __name__ == "__main__":
         p.start()
     for i in range(n_p):
         ps[i].join()
+    bad = [p.exitcode for p in ps if p.exitcode not in (0, None)]
+    if bad:
+        printt("f0 worker(s) failed with exit codes: %s" % bad)
+        raise SystemExit(1)
