@@ -16,8 +16,18 @@ config = Config()
 
 # File extensions to accept as audio input.
 _AUDIO_EXTS = {
-    ".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus",
-    ".aac", ".aiff", ".aif", ".wma", ".mp4", ".mov",
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".m4a",
+    ".ogg",
+    ".opus",
+    ".aac",
+    ".aiff",
+    ".aif",
+    ".wma",
+    ".mp4",
+    ".mov",
 }
 
 
@@ -42,8 +52,19 @@ def _is_audio_file(path: str, *, strict: bool = False) -> bool:
     return ext in _AUDIO_EXTS
 
 
-def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format0, cancel_event=None):
+def uvr(
+    model_name,
+    inp_root,
+    save_root_vocal,
+    paths,
+    save_root_ins,
+    agg,
+    format0,
+    cancel_event=None,
+):
     infos = []
+    pre_fun = None  # so the finally cleanup doesn't UnboundLocalError when the
+    # separator model itself fails to construct (e.g. missing weights).
     try:
         inp_root = inp_root.strip(" ").strip('"').strip("\n").strip('"').strip(" ")
         save_root_vocal = (
@@ -127,9 +148,7 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                 yield "\n".join(infos)
                 return
             try:
-                pre_fun._path_audio_(
-                    inp_path, save_root_ins, save_root_vocal, format0
-                )
+                pre_fun._path_audio_(inp_path, save_root_ins, save_root_vocal, format0)
                 infos.append("%s->Success" % (os.path.basename(inp_path)))
                 yield "\n".join(infos)
             except Exception:
@@ -155,15 +174,16 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
         yield "\n".join(infos)
         raise RuntimeError("UVR processing failed") from exc
     finally:
-        try:
-            if model_name == "onnx_dereverb_By_FoxJoy":
-                del pre_fun.pred.model
-                del pre_fun.pred.model_
-            else:
-                del pre_fun.model
-                del pre_fun
-        except Exception:
-            logger.warning("UVR cleanup failed:\n%s", traceback.format_exc())
+        if pre_fun is not None:
+            try:
+                if model_name == "onnx_dereverb_By_FoxJoy":
+                    del pre_fun.pred.model
+                    del pre_fun.pred.model_
+                else:
+                    del pre_fun.model
+                    del pre_fun
+            except Exception:
+                logger.warning("UVR cleanup failed:\n%s", traceback.format_exc())
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             logger.info("Executed torch.cuda.empty_cache()")

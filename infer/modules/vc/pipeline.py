@@ -69,6 +69,14 @@ class Pipeline(object):
         # 外部から load_vc() 等でセットされる。None の場合は PyTorch 推論を使用。
         self.onnx_net_g = None
 
+        # FAISS index cache so batch inference does not re-read the index and
+        # rebuild the (potentially tens-of-MB) feature matrix from disk on
+        # every file. Keyed by (path, mtime) so a regenerated index is picked
+        # up automatically. Mirrors infer/lib/rtrvc.py which caches on the RVC
+        # object for the realtime path.
+        self._index_cache_key = None
+        self._index_cache = None  # tuple (index, big_npy)
+
         self.f0_gen = Generator(
             Path(os.environ["rmvpe_root"]),
             self.is_half,
@@ -234,8 +242,18 @@ class Pipeline(object):
             and index_rate != 0
         ):
             try:
-                index = faiss.read_index(file_index)
-                big_npy = index.reconstruct_n(0, index.ntotal)
+                try:
+                    cache_key = (file_index, os.path.getmtime(file_index))
+                except OSError:
+                    cache_key = None
+                if cache_key is not None and cache_key == self._index_cache_key:
+                    index, big_npy = self._index_cache
+                else:
+                    index = faiss.read_index(file_index)
+                    big_npy = index.reconstruct_n(0, index.ntotal)
+                    if cache_key is not None:
+                        self._index_cache_key = cache_key
+                        self._index_cache = (index, big_npy)
             except Exception:
                 logger.exception("failed to load faiss index: %s", file_index)
                 index = big_npy = None

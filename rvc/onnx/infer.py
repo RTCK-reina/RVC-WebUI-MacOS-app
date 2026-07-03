@@ -95,9 +95,7 @@ class OnnxSynthesizer:
                 "onnxruntime is required for ONNX inference but is not installed. "
                 "Install it with: pip install onnxruntime"
             )
-        self._session = _ort.InferenceSession(
-            path, providers=_make_providers(device)
-        )
+        self._session = _ort.InferenceSession(path, providers=_make_providers(device))
         self._input_names = [inp.name for inp in self._session.get_inputs()]
 
     def infer(
@@ -136,7 +134,10 @@ class OnnxSynthesizer:
         rnd = np.random.randn(1, 192, T).astype(np.float32)
 
         inputs = dict(
-            zip(self._input_names, [feats_np, p_len_np, pitch_np, pitchf_np, sid_np, rnd])
+            zip(
+                self._input_names,
+                [feats_np, p_len_np, pitch_np, pitchf_np, sid_np, rnd],
+            )
         )
 
         audio_np = self._session.run(None, inputs)[0]  # [1, 1, samples]

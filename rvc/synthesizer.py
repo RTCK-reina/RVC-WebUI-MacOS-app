@@ -30,9 +30,7 @@ def get_synthesizer(cpt: OrderedDict, device=torch.device("cpu")):
     return net_g, cpt
 
 
-def load_synthesizer(
-    pth_path: str | BytesIO, device=torch.device("cpu")
-):
+def load_synthesizer(pth_path: str | BytesIO, device=torch.device("cpu")):
     return get_synthesizer(
         load_weights(pth_path),
         device,

@@ -120,6 +120,7 @@ class FeatureInput(object):
         rmvpe = self.f0_gen.rmvpe if hasattr(self.f0_gen, "rmvpe") else None
         if rmvpe is None:
             from rvc.f0.rmvpe import RMVPE
+
             rmvpe = RMVPE(
                 str(self.f0_gen.rmvpe_root / "rmvpe.pt"),
                 is_half=self.f0_gen.is_half,
@@ -131,12 +132,14 @@ class FeatureInput(object):
         # Filter to only files that need processing.
         todo = []
         for idx, (inp_path, opt_path1, opt_path2) in enumerate(paths):
-            if os.path.exists(opt_path1 + ".npy") and os.path.exists(opt_path2 + ".npy"):
+            if os.path.exists(opt_path1 + ".npy") and os.path.exists(
+                opt_path2 + ".npy"
+            ):
                 continue
             todo.append((idx, inp_path, opt_path1, opt_path2))
 
         for batch_start in range(0, len(todo), batch_size):
-            batch = todo[batch_start:batch_start + batch_size]
+            batch = todo[batch_start : batch_start + batch_size]
             wavs = []
             p_lens = []
             valid = []
@@ -154,7 +157,9 @@ class FeatureInput(object):
                 continue
 
             try:
-                f0_list = rmvpe.compute_f0_batch(wavs, p_lens=p_lens, filter_radius=0.03)
+                f0_list = rmvpe.compute_f0_batch(
+                    wavs, p_lens=p_lens, filter_radius=0.03
+                )
             except Exception:
                 printt("f0batch-fail-%s" % traceback.format_exc())
                 # Fallback to sequential on batch failure.
@@ -168,7 +173,9 @@ class FeatureInput(object):
                         np.save(opt_path1, coarse_pit, allow_pickle=False)
                     except Exception:
                         self.failures.append(inp_path)
-                        printt("f0fail-%s-%s-%s" % (idx, inp_path, traceback.format_exc()))
+                        printt(
+                            "f0fail-%s-%s-%s" % (idx, inp_path, traceback.format_exc())
+                        )
                 continue
 
             for i, (idx, inp_path, opt_path1, opt_path2) in enumerate(valid):

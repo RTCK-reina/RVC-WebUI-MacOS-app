@@ -17,6 +17,7 @@ This module pops the stubs, imports the real modules from the ``rvc``
 conda env, and restores state on teardown so subsequent test files
 (which rely on the stubs) continue to work.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -24,7 +25,6 @@ import os
 import sys
 
 import pytest
-
 
 _SWAPPED_KEYS = ("torch", "infer.lib.train.process_ckpt")
 
@@ -41,23 +41,27 @@ def _swap_in_real_modules():
     for key in list(saved):
         sys.modules.pop(key, None)
 
-    import torch  # real torch from rvc conda env
+    try:
+        import torch  # real torch from rvc conda env
 
-    if not hasattr(torch, "zeros") or not callable(getattr(torch, "zeros", None)):
-        raise RuntimeError(
-            "real torch required for this test — got a stub. "
-            "Run pytest inside the rvc conda env."
-        )
-    # The stub advertised version "2.0.0+mock" — guard against that sneaking in.
-    if str(getattr(torch, "__version__", "")).endswith("+mock"):
-        raise RuntimeError("real torch required; got +mock stub")
+        if not hasattr(torch, "zeros") or not callable(getattr(torch, "zeros", None)):
+            raise RuntimeError(
+                "real torch required for this test — got a stub. "
+                "Run pytest inside the rvc conda env."
+            )
+        # The stub advertised version "2.0.0+mock" — guard against that sneaking in.
+        if str(getattr(torch, "__version__", "")).endswith("+mock"):
+            raise RuntimeError("real torch required; got +mock stub")
 
-    mod = importlib.import_module("infer.lib.train.process_ckpt")
-    # Avoid pulling real infer.modules.vc (heavy). These are set after import
-    # so the merge() body uses them via module attribute lookup.
-    mod.model_hash_ckpt = lambda _opt: "hash-stub"
-    mod.hash_id = lambda _h: "id-stub"
-    return saved, mod, torch
+        mod = importlib.import_module("infer.lib.train.process_ckpt")
+        # Avoid pulling real infer.modules.vc (heavy). These are set after import
+        # so the merge() body uses them via module attribute lookup.
+        mod.model_hash_ckpt = lambda _opt: "hash-stub"
+        mod.hash_id = lambda _h: "id-stub"
+        return saved, mod, torch
+    except Exception:
+        _restore_modules(saved)
+        raise
 
 
 def _restore_modules(saved: dict[str, object]):
@@ -72,7 +76,16 @@ def real_process_ckpt():
     # Module-scoped: torch's native extension cannot be unloaded and
     # re-imported safely (RuntimeError: function already has a docstring),
     # so we do the stub swap exactly once per test module.
-    saved, mod, torch = _swap_in_real_modules()
+    try:
+        saved, mod, torch = _swap_in_real_modules()
+    except ModuleNotFoundError as e:
+        if e.name == "torch":
+            pytest.skip("real torch is not installed in this Python environment")
+        raise
+    except RuntimeError as e:
+        if "real torch required" in str(e):
+            pytest.skip(str(e))
+        raise
     try:
         yield mod, torch
     finally:
@@ -92,13 +105,15 @@ def _inference_ckpt(torch, author: str):
 
 
 def _raw_training_ckpt(torch, author: str):
-    # Raw G_*.pth shape — state dict lives under "model".
+    # Raw G_*.pth shape — state dict lives under "model". A real checkpoint
+    # from utils.save_checkpoint has NO "config" key (only model/iteration/
+    # optimizer/learning_rate), so we deliberately omit it: merge() must derive
+    # config from the sr/version args instead of indexing ckpt1["config"].
     return {
         "model": {
             "layer.weight": torch.zeros(2, 2),
             "layer.bias": torch.zeros(2),
         },
-        "config": [1, 2, 3],
         "iteration": 0,
         "author": author,
     }
@@ -116,9 +131,7 @@ def test_merge_preserves_author_from_inference_ckpts(
     torch.save(_inference_ckpt(torch, "Alice"), str(p1))
     torch.save(_inference_ckpt(torch, "Bob"), str(p2))
 
-    result = mod.merge(
-        str(p1), str(p2), 0.5, "40k", 1, "info", "merged_authors", "v2"
-    )
+    result = mod.merge(str(p1), str(p2), 0.5, "40k", 1, "info", "merged_authors", "v2")
     assert result == "Success.", result
 
     out = tmp_path / "merged_authors.pth"
@@ -127,9 +140,7 @@ def test_merge_preserves_author_from_inference_ckpts(
     assert loaded["author"] == "Alice & Bob"
 
 
-def test_merge_extracts_raw_training_ckpt(
-    tmp_path, monkeypatch, real_process_ckpt
-):
+def test_merge_extracts_raw_training_ckpt(tmp_path, monkeypatch, real_process_ckpt):
     """Regression guard for bug 1 (extract() shape mismatch).
 
     Without the extract() fix, merge() raises before returning "Success.".
@@ -142,9 +153,7 @@ def test_merge_extracts_raw_training_ckpt(
     torch.save(_raw_training_ckpt(torch, "Carol"), str(p1))
     torch.save(_inference_ckpt(torch, "Dave"), str(p2))
 
-    result = mod.merge(
-        str(p1), str(p2), 0.5, "40k", 1, "info", "merged_raw", "v2"
-    )
+    result = mod.merge(str(p1), str(p2), 0.5, "40k", 1, "info", "merged_raw", "v2")
     assert result == "Success.", result
 
     out = tmp_path / "merged_raw.pth"
@@ -186,3 +195,33 @@ def test_extract_small_model_does_not_execute_malicious_checkpoint(
             str(malicious), "safe_name", "author", "40k", 1, "info", "v2"
         )
     assert not sentinel.exists()
+
+
+def test_merge_raw_ckpt_without_config_stamps_synth_config(
+    tmp_path, monkeypatch, real_process_ckpt
+):
+    """Regression guard for bug 3 (KeyError on a configless raw G_*.pth).
+
+    merge() used to read ``ckpt1["config"]`` unconditionally; a real raw
+    checkpoint has no such key, so it raised KeyError that the bare except
+    swallowed into a returned traceback. It must now derive the config from
+    the requested sr/version, stamping the canonical 40k synthesizer config.
+    """
+    mod, torch = real_process_ckpt
+    monkeypatch.setenv("weight_root", str(tmp_path))
+
+    # BOTH inputs are raw checkpoints with no embedded "config".
+    p1 = tmp_path / "raw1.pth"
+    p2 = tmp_path / "raw2.pth"
+    torch.save(_raw_training_ckpt(torch, "Eve"), str(p1))
+    torch.save(_raw_training_ckpt(torch, "Frank"), str(p2))
+
+    result = mod.merge(str(p1), str(p2), 0.5, "40k", 1, "info", "merged_cfg", "v2")
+    assert result == "Success.", result
+
+    loaded = torch.load(str(tmp_path / "merged_cfg.pth"), map_location="cpu")
+    # The derived config must match the canonical 40k table (18 fields, with
+    # the trailing sampling rate 40000), NOT a KeyError-swallowed failure.
+    assert loaded["config"] == mod._synth_config("40k", "v2")
+    assert loaded["config"][-1] == 40000
+    assert loaded["sr"] == "40k"  # string key, not int 40000

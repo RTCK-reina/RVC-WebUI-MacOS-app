@@ -66,20 +66,32 @@ struct ProgressBarView: View {
 struct ActiveTasksList: View {
     @EnvironmentObject var bridge: PythonBridge
 
+    /// Phases whose backend actually honours cancellation. Everything else
+    /// (single inference, merge, extract, onnx) registers a task only for
+    /// status visibility and ignores cancel — showing a Cancel button there
+    /// would lie: it removes the card and suppresses progress while the op
+    /// keeps running to completion. Allowlist so any new non-cancellable
+    /// phase defaults to "no button".
+    private static let cancellablePhases: Set<String> = [
+        "batch", "separation", "preprocessing", "f0", "features", "training", "index",
+    ]
+
     var body: some View {
         VStack(spacing: 8) {
             ForEach(Array(bridge.activeProgress.values), id: \.id) { p in
                 ProgressBarView(
                     taskID: p.id,
                     title: label(for: p.phase),
-                    onCancel: { [taskID = p.id] in
-                        Task {
-                            _ = try? await bridge.callRaw(
-                                "cancel",
-                                params: .object(["task_id": .string(taskID)]))
-                            bridge.clearProgress(for: taskID)
-                        }
-                    })
+                    onCancel: Self.cancellablePhases.contains(p.phase)
+                        ? { [taskID = p.id] in
+                            Task {
+                                _ = try? await bridge.callRaw(
+                                    "cancel",
+                                    params: .object(["task_id": .string(taskID)]))
+                                bridge.clearProgress(for: taskID)
+                            }
+                          }
+                        : nil)
             }
         }
     }

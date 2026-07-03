@@ -92,6 +92,122 @@ def save_small_model(ckpt, sr, if_f0, name, epoch, version, hps):
         raise RuntimeError(traceback.format_exc()) from e
 
 
+def _synth_config(sr, version):
+    """Return the synthesizer ``config`` list for a sample-rate key + version.
+
+    ``sr`` is the STRING key ("40k"/"48k"/"32k"); returns ``None`` for an
+    unrecognised key. Shared by extract_small_model() and merge() so a model
+    derived from a raw G_*.pth checkpoint (which carries no embedded "config")
+    still gets the correct config stamped, and the two code paths cannot drift.
+    """
+    if sr == "40k":
+        return [
+            1025,
+            32,
+            192,
+            192,
+            768,
+            2,
+            6,
+            3,
+            0,
+            "1",
+            [3, 7, 11],
+            [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+            [10, 10, 2, 2],
+            512,
+            [16, 16, 4, 4],
+            109,
+            256,
+            40000,
+        ]
+    if sr == "48k":
+        if version == "v1":
+            return [
+                1025,
+                32,
+                192,
+                192,
+                768,
+                2,
+                6,
+                3,
+                0,
+                "1",
+                [3, 7, 11],
+                [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+                [10, 6, 2, 2, 2],
+                512,
+                [16, 16, 4, 4, 4],
+                109,
+                256,
+                48000,
+            ]
+        return [
+            1025,
+            32,
+            192,
+            192,
+            768,
+            2,
+            6,
+            3,
+            0,
+            "1",
+            [3, 7, 11],
+            [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+            [12, 10, 2, 2],
+            512,
+            [24, 20, 4, 4],
+            109,
+            256,
+            48000,
+        ]
+    if sr == "32k":
+        if version == "v1":
+            return [
+                513,
+                32,
+                192,
+                192,
+                768,
+                2,
+                6,
+                3,
+                0,
+                "1",
+                [3, 7, 11],
+                [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+                [10, 4, 2, 2, 2],
+                512,
+                [16, 16, 4, 4, 4],
+                109,
+                256,
+                32000,
+            ]
+        return [
+            513,
+            32,
+            192,
+            192,
+            768,
+            2,
+            6,
+            3,
+            0,
+            "1",
+            [3, 7, 11],
+            [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+            [10, 8, 2, 2],
+            512,
+            [20, 16, 4, 4],
+            109,
+            256,
+            32000,
+        ]
+    return None
+
+
 def extract_small_model(path, name, author, sr, if_f0, info, version):
     try:
         ckpt = load_weights(path, map_location="cpu")
@@ -109,113 +225,9 @@ def extract_small_model(path, name, author, sr, if_f0, info, version):
             if "enc_q" in key:
                 continue
             opt["weight"][key] = ckpt[key].half()
-        if sr == "40k":
-            opt["config"] = [
-                1025,
-                32,
-                192,
-                192,
-                768,
-                2,
-                6,
-                3,
-                0,
-                "1",
-                [3, 7, 11],
-                [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-                [10, 10, 2, 2],
-                512,
-                [16, 16, 4, 4],
-                109,
-                256,
-                40000,
-            ]
-        elif sr == "48k":
-            if version == "v1":
-                opt["config"] = [
-                    1025,
-                    32,
-                    192,
-                    192,
-                    768,
-                    2,
-                    6,
-                    3,
-                    0,
-                    "1",
-                    [3, 7, 11],
-                    [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-                    [10, 6, 2, 2, 2],
-                    512,
-                    [16, 16, 4, 4, 4],
-                    109,
-                    256,
-                    48000,
-                ]
-            else:
-                opt["config"] = [
-                    1025,
-                    32,
-                    192,
-                    192,
-                    768,
-                    2,
-                    6,
-                    3,
-                    0,
-                    "1",
-                    [3, 7, 11],
-                    [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-                    [12, 10, 2, 2],
-                    512,
-                    [24, 20, 4, 4],
-                    109,
-                    256,
-                    48000,
-                ]
-        elif sr == "32k":
-            if version == "v1":
-                opt["config"] = [
-                    513,
-                    32,
-                    192,
-                    192,
-                    768,
-                    2,
-                    6,
-                    3,
-                    0,
-                    "1",
-                    [3, 7, 11],
-                    [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-                    [10, 4, 2, 2, 2],
-                    512,
-                    [16, 16, 4, 4, 4],
-                    109,
-                    256,
-                    32000,
-                ]
-            else:
-                opt["config"] = [
-                    513,
-                    32,
-                    192,
-                    192,
-                    768,
-                    2,
-                    6,
-                    3,
-                    0,
-                    "1",
-                    [3, 7, 11],
-                    [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-                    [10, 8, 2, 2],
-                    512,
-                    [20, 16, 4, 4],
-                    109,
-                    256,
-                    32000,
-                ]
+        cfg = _synth_config(sr, version)
+        if cfg is not None:
+            opt["config"] = cfg
         if info == "":
             info = "Extracted model."
         opt["info"] = info
@@ -271,7 +283,19 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
 
         ckpt1 = load_weights(path1, map_location="cpu")
         ckpt2 = load_weights(path2, map_location="cpu")
-        cfg = ckpt1["config"]
+        # A raw training checkpoint (G_*.pth) carries no "config" key — indexing
+        # it directly used to raise KeyError and the bare except swallowed it
+        # into a returned traceback, so merging a raw checkpoint as path1
+        # silently failed. Derive config from the user-selected sr/version
+        # (the same table extract_small_model uses) when it is absent.
+        cfg = ckpt1.get("config")
+        if cfg is None:
+            cfg = _synth_config(sr, version)
+            if cfg is None:
+                return (
+                    "Fail to merge: the first model has no embedded config and "
+                    "sample rate '%s' is unrecognised (expected 40k/48k/32k)." % sr
+                )
         author = authors(ckpt1, ckpt2)
         if "model" in ckpt1:
             ckpt1 = extract(ckpt1)

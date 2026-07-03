@@ -346,6 +346,7 @@ class SynthesizerTrnMs256NSFsid_nono(SynthesizerTrnMsNSFsid):
             upsample_kernel_sizes,
             spk_embed_dim,
             gin_channels,
+            sr,
             256,
             False,
         )
@@ -391,6 +392,7 @@ class SynthesizerTrnMs768NSFsid_nono(SynthesizerTrnMsNSFsid):
             upsample_kernel_sizes,
             spk_embed_dim,
             gin_channels,
+            sr,
             768,
             False,
         )

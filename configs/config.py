@@ -83,6 +83,10 @@ def ensure_user_layout(user_dir: Path) -> None:
         "configs/inuse/v1",
         "configs/inuse/v2",
         "temp",
+        "cache",
+        "cache/fontconfig",
+        "cache/matplotlib",
+        "cache/numba",
     ]
     for sd in subdirs:
         (user_dir / sd).mkdir(parents=True, exist_ok=True)
@@ -113,21 +117,38 @@ def _populate_env_paths(base_dir: Path, user_dir: Path) -> None:
     os.environ["output_root"] = str(user_dir / "output")
     os.environ["input_root"] = str(user_dir / "input")
     os.environ["TEMP"] = str(user_dir / "temp")
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+    # macOS app launches and sandboxed subprocesses may not have writable
+    # user cache locations. librosa imports numba-cached functions during
+    # training; without an explicit cache dir it can abort with
+    # "cannot cache function ... no locator available" before training starts.
+    os.environ["XDG_CACHE_HOME"] = str(user_dir / "cache")
+    os.environ["MPLCONFIGDIR"] = str(user_dir / "cache" / "matplotlib")
+    os.environ["NUMBA_CACHE_DIR"] = str(user_dir / "cache" / "numba")
 
 
 @singleton_variable
 class Config:
     def __init__(self, base_dir=None, user_dir=None):
         # Resolve dirs first so that load_config_json / path helpers can use them.
-        self.base_dir: Path = Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
-        self.user_dir: Path = Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        self.base_dir: Path = (
+            Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
+        )
+        self.user_dir: Path = (
+            Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        )
         ensure_user_layout(self.user_dir)
         _populate_env_paths(self.base_dir, self.user_dir)
 
         self.device = "cuda:0"
         self.is_half = True
         self.use_jit = False
-        self.use_onnx = os.environ.get("RVC_USE_ONNX", "").lower() in ("1", "true", "yes")
+        self.use_onnx = os.environ.get("RVC_USE_ONNX", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         self.n_cpu = 0
         self.gpu_name = None
         self.json_config = self.load_config_json()
@@ -185,10 +206,14 @@ class Config:
         """
         exe = sys.executable or "python"
         parser = argparse.ArgumentParser()
-        parser.add_argument("--port", type=int, default=7865, help="Listen port (legacy web.py)")
+        parser.add_argument(
+            "--port", type=int, default=7865, help="Listen port (legacy web.py)"
+        )
         parser.add_argument("--pycmd", type=str, default=exe, help="Python command")
         parser.add_argument(
-            "--global_link", action="store_true", help="Generate a global proxy link (legacy web.py)"
+            "--global_link",
+            action="store_true",
+            help="Generate a global proxy link (legacy web.py)",
         )
         parser.add_argument(
             "--noparallel", action="store_true", help="Disable parallel processing"
@@ -210,8 +235,12 @@ class Config:
             "--update", action="store_true", help="Update to latest assets"
         )
         # Known but ignored here (rpc_server.py parses these before Config()):
-        parser.add_argument("--base-dir", type=str, default=None, help=argparse.SUPPRESS)
-        parser.add_argument("--user-dir", type=str, default=None, help=argparse.SUPPRESS)
+        parser.add_argument(
+            "--base-dir", type=str, default=None, help=argparse.SUPPRESS
+        )
+        parser.add_argument(
+            "--user-dir", type=str, default=None, help=argparse.SUPPRESS
+        )
         cmd_opts, _unknown = parser.parse_known_args()
 
         cmd_opts.port = cmd_opts.port if 0 <= cmd_opts.port <= 65535 else 7865
@@ -230,14 +259,35 @@ class Config:
     # has_mps is only available in nightly pytorch (for now) and MasOS 12.3+.
     # check `getattr` and try it for compatibility
     @staticmethod
-    def has_mps() -> bool:
-        if not torch.backends.mps.is_available():
-            return False
+    def probe_mps() -> tuple[bool, str | None]:
+        mps = getattr(torch.backends, "mps", None)
+        if mps is None:
+            return False, "torch.backends.mps is not present"
+        try:
+            if not mps.is_built():
+                return False, "this PyTorch build does not include MPS"
+            if not mps.is_available():
+                try:
+                    torch.zeros(1).to(torch.device("mps"))
+                except Exception as e:
+                    return (
+                        False,
+                        "torch.backends.mps.is_available() returned False; "
+                        f"{type(e).__name__}: {e}",
+                    )
+                return False, "torch.backends.mps.is_available() returned False"
+        except Exception as e:
+            return False, str(e)
         try:
             torch.zeros(1).to(torch.device("mps"))
-            return True
+            return True, None
         except Exception:
-            return False
+            return False, "MPS tensor allocation failed"
+
+    @staticmethod
+    def has_mps() -> bool:
+        ok, _reason = Config.probe_mps()
+        return ok
 
     @staticmethod
     def has_xpu() -> bool:
@@ -262,6 +312,8 @@ class Config:
         logger.info("overwrite preprocess_per to %.1f" % (self.preprocess_per))
 
     def device_config(self):
+        self.mps_available, self.mps_error = self.probe_mps()
+
         if torch.cuda.is_available():
             if self.has_xpu():
                 self.device = self.instead = "xpu:0"
@@ -290,7 +342,7 @@ class Config:
             )
             if self.gpu_mem <= 4:
                 self.preprocess_per = 3.0
-        elif self.has_mps():
+        elif self.mps_available:
             logger.info("No supported Nvidia GPU found")
             self.device = self.instead = "mps"
             self.is_half = False
@@ -341,8 +393,12 @@ class Config:
 @singleton_variable
 class CPUConfig:
     def __init__(self, base_dir=None, user_dir=None):
-        self.base_dir: Path = Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
-        self.user_dir: Path = Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        self.base_dir: Path = (
+            Path(base_dir).expanduser().resolve() if base_dir else _default_base_dir()
+        )
+        self.user_dir: Path = (
+            Path(user_dir).expanduser().resolve() if user_dir else _default_user_dir()
+        )
         ensure_user_layout(self.user_dir)
         _populate_env_paths(self.base_dir, self.user_dir)
 

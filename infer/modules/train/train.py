@@ -34,6 +34,7 @@ def _check_cancel(hparams) -> None:
         # stat failed (fs race); ignore and try again next tick.
         pass
 
+
 now_dir = os.getcwd()
 sys.path.append(os.path.join(now_dir))
 # train.py lives at infer/modules/train/train.py; walk up 3 dirs to reach the
@@ -86,6 +87,7 @@ import torch.multiprocessing as mp
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+
 # tensorboard is intentionally not shipped in the macOS .app bundle
 # (requirements/app.txt drops tensorboard* to keep the env lean). We still
 # want the upstream training loop to run unmodified, so provide a no-op
@@ -93,6 +95,7 @@ from torch.utils.data import DataLoader
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
+
     class SummaryWriter:  # type: ignore[no-redef]
         """No-op tensorboard SummaryWriter for bundles without tensorboard."""
 
@@ -131,6 +134,7 @@ except ImportError:
 
         def close(self):
             pass
+
 
 from infer.lib.train.data_utils import (
     DistributedBucketSampler,
@@ -172,13 +176,43 @@ global_step = 0
 
 
 def _select_device():
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    requested = os.environ.get("RVC_TRAIN_DEVICE", "").strip().lower()
+    if requested in ("cpu", "mps"):
+        if requested == "mps" and not _mps_available():
+            raise RuntimeError(
+                "RVC_TRAIN_DEVICE=mps was requested, but MPS is unavailable"
+            )
+        return requested
+    if requested.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"RVC_TRAIN_DEVICE={requested} was requested, but CUDA is unavailable"
+            )
+        return requested
+
+    if _mps_available():
         return "mps"
+    if torch.cuda.is_available():
+        return "cuda:0"
     return "cpu"
+
+
+def _mps_available() -> bool:
+    mps = getattr(torch.backends, "mps", None)
+    if mps is None:
+        return False
+    try:
+        if not mps.is_built() or not mps.is_available():
+            return False
+        torch.zeros(1, device="mps")
+        return True
+    except Exception:
+        return False
 
 
 _TRAIN_DEVICE = _select_device()
 _IS_MPS = _TRAIN_DEVICE == "mps"
+_IS_ACCELERATOR = _TRAIN_DEVICE != "cpu"
 
 
 class EpochRecorder:
@@ -196,8 +230,12 @@ class EpochRecorder:
 
 def main():
     # macOS: always a single training process. MPS if available, CPU otherwise.
-    if not _IS_MPS:
-        print("MPS not available: falling back to CPU - this will be slow.")
+    if _TRAIN_DEVICE == "mps":
+        print("Using Apple Silicon GPU (MPS) for training.")
+    elif str(_TRAIN_DEVICE).startswith("cuda"):
+        print(f"Using CUDA GPU for training: {_TRAIN_DEVICE}")
+    else:
+        print("No GPU backend available: falling back to CPU - this will be slow.")
     n_gpus = 1
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(randint(20000, 55555))
@@ -211,8 +249,14 @@ def main():
         children.append(subproc)
         subproc.start()
 
-    for i in range(n_gpus):
-        children[i].join()
+    failed = []
+    for child in children:
+        child.join()
+        if child.exitcode not in (0, None):
+            failed.append(child.exitcode)
+    if failed:
+        logger.error("training worker(s) failed with exit code(s): %s", failed)
+        sys.exit(failed[0] or 1)
 
 
 def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
@@ -224,20 +268,23 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
         writer = SummaryWriter(log_dir=hps.model_dir)
         writer_eval = SummaryWriter(log_dir=os.path.join(hps.model_dir, "eval"))
 
-    try:
-        dist.init_process_group(
-            backend="gloo",
-            init_method="env://",
-            world_size=n_gpus,
-            rank=rank,
-        )
-    except Exception:
-        dist.init_process_group(
-            backend="gloo",
-            init_method="env://?use_libuv=False",
-            world_size=n_gpus,
-            rank=rank,
-        )
+    if n_gpus > 1:
+        try:
+            dist.init_process_group(
+                backend="gloo",
+                init_method="env://",
+                world_size=n_gpus,
+                rank=rank,
+            )
+        except Exception:
+            dist.init_process_group(
+                backend="gloo",
+                init_method="env://?use_libuv=False",
+                world_size=n_gpus,
+                rank=rank,
+            )
+    elif rank == 0:
+        logger.info("single-process training: skipping torch.distributed init")
     torch.manual_seed(hps.train.seed)
     # MPS has unreliable fp16 support; CPU has none. Force fp32 so
     # GradScaler/autocast stay no-ops regardless of the config default.
@@ -256,11 +303,15 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
         rank=rank,
         shuffle=True,
     )
-    # DataLoader workers: hps.train から読み込み。未設定時は CPU コア数ベースで決定。
-    # M5 Pro (12 コア) 相当なら 4〜6 が適切。
-    _n_cpu = os.cpu_count() or 4
-    _default_num_workers = min(max(_n_cpu // 2, 2), 6)
-    _num_workers = getattr(hps.train, "num_workers", _default_num_workers)
+    # Multiprocess DataLoader workers launch torch_shm_manager on macOS, which
+    # can be blocked in the app/sandbox execution path. Keep loading in-process
+    # there; non-macOS keeps the tuned worker default.
+    if sys.platform == "darwin":
+        _num_workers = 0
+    else:
+        _n_cpu = os.cpu_count() or 4
+        _default_num_workers = min(max(_n_cpu // 2, 2), 6)
+        _num_workers = getattr(hps.train, "num_workers", _default_num_workers)
     _prefetch_factor = getattr(hps.train, "prefetch_factor", 8)
 
     if hps.if_f0 == 1:
@@ -302,16 +353,16 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
             hps.train.segment_size // hps.data.hop_length,
             **mdl,
         )
-    if _IS_MPS:
-        net_g = net_g.to("mps")
+    if _IS_ACCELERATOR:
+        net_g = net_g.to(_TRAIN_DEVICE)
     has_xpu = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
     net_d = MultiPeriodDiscriminator(
         hps.version,
         use_spectral_norm=hps.model.use_spectral_norm,
         has_xpu=has_xpu,
     )
-    if _IS_MPS:
-        net_d = net_d.to("mps")
+    if _IS_ACCELERATOR:
+        net_d = net_d.to(_TRAIN_DEVICE)
     optim_g = torch.optim.AdamW(
         net_g.parameters(),
         hps.train.learning_rate,
@@ -481,18 +532,18 @@ def train_and_evaluate(
                         wave_lengths,
                         sid,
                     ) = info
-                # Load on MPS (or stay on CPU)
-                if _IS_MPS:
-                    phone = phone.to("mps", non_blocking=True)
-                    phone_lengths = phone_lengths.to("mps", non_blocking=True)
+                # Load on the selected accelerator (or stay on CPU).
+                if _IS_ACCELERATOR:
+                    phone = phone.to(_TRAIN_DEVICE, non_blocking=True)
+                    phone_lengths = phone_lengths.to(_TRAIN_DEVICE, non_blocking=True)
                     if hps.if_f0 == 1:
-                        pitch = pitch.to("mps", non_blocking=True)
-                        pitchf = pitchf.to("mps", non_blocking=True)
-                    sid = sid.to("mps", non_blocking=True)
-                    spec = spec.to("mps", non_blocking=True)
-                    spec_lengths = spec_lengths.to("mps", non_blocking=True)
-                    wave = wave.to("mps", non_blocking=True)
-                    wave_lengths = wave_lengths.to("mps", non_blocking=True)
+                        pitch = pitch.to(_TRAIN_DEVICE, non_blocking=True)
+                        pitchf = pitchf.to(_TRAIN_DEVICE, non_blocking=True)
+                    sid = sid.to(_TRAIN_DEVICE, non_blocking=True)
+                    spec = spec.to(_TRAIN_DEVICE, non_blocking=True)
+                    spec_lengths = spec_lengths.to(_TRAIN_DEVICE, non_blocking=True)
+                    wave = wave.to(_TRAIN_DEVICE, non_blocking=True)
+                    wave_lengths = wave_lengths.to(_TRAIN_DEVICE, non_blocking=True)
                 # Cache on list
                 if hps.if_f0 == 1:
                     cache.append(
@@ -569,17 +620,17 @@ def train_and_evaluate(
             ) = info
         else:
             phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid = info
-        ## Load on MPS (or stay on CPU)
-        if (hps.if_cache_data_in_gpu == False) and _IS_MPS:
-            phone = phone.to("mps", non_blocking=True)
-            phone_lengths = phone_lengths.to("mps", non_blocking=True)
+        ## Load on accelerator (or stay on CPU)
+        if (hps.if_cache_data_in_gpu == False) and _IS_ACCELERATOR:
+            phone = phone.to(_TRAIN_DEVICE, non_blocking=True)
+            phone_lengths = phone_lengths.to(_TRAIN_DEVICE, non_blocking=True)
             if hps.if_f0 == 1:
-                pitch = pitch.to("mps", non_blocking=True)
-                pitchf = pitchf.to("mps", non_blocking=True)
-            sid = sid.to("mps", non_blocking=True)
-            spec = spec.to("mps", non_blocking=True)
-            spec_lengths = spec_lengths.to("mps", non_blocking=True)
-            wave = wave.to("mps", non_blocking=True)
+                pitch = pitch.to(_TRAIN_DEVICE, non_blocking=True)
+                pitchf = pitchf.to(_TRAIN_DEVICE, non_blocking=True)
+            sid = sid.to(_TRAIN_DEVICE, non_blocking=True)
+            spec = spec.to(_TRAIN_DEVICE, non_blocking=True)
+            spec_lengths = spec_lengths.to(_TRAIN_DEVICE, non_blocking=True)
+            wave = wave.to(_TRAIN_DEVICE, non_blocking=True)
 
         # accumulation_steps バッチごとに optimizer.step() を実行するか判定。
         # iter_idx（連続）を使い、batch_idx（cache shuffle 後に非連続）に依存しない。

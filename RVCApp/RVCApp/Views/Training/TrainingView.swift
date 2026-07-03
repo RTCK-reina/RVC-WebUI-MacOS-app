@@ -53,6 +53,7 @@ struct TrainingView: View {
     @AppStorage("train.ifSaveLatest") private var ifSaveLatest: Bool = true
     @AppStorage("train.ifCacheGpu") private var ifCacheGpu: Bool = false
     @AppStorage("train.ifSaveEveryWeights") private var ifSaveEveryWeights: Bool = true
+    @AppStorage("train.requireGPU") private var requireGPU: Bool = false
     @AppStorage("train.spkId") private var spkId: Double = 0
     @AppStorage("train.pretrainedG") private var pretrainedG: String = ""
     @AppStorage("train.pretrainedD") private var pretrainedD: String = ""
@@ -253,6 +254,7 @@ struct TrainingView: View {
                 HStack {
                     Toggle("最新のみ保存", isOn: $ifSaveLatest)
                     Toggle("GPU にキャッシュ", isOn: $ifCacheGpu)
+                    Toggle("GPU 学習を要求", isOn: $requireGPU)
                     Toggle("毎回重みを保存", isOn: $ifSaveEveryWeights)
                 }
                 FilePickerField(
@@ -432,6 +434,11 @@ struct TrainingView: View {
                 AppNotification.send(
                     title: "トレーニング完了",
                     body: "\(method) が正常に終了しました。")
+            } else if r.status == "cancelled" {
+                // User-initiated stop. Cancellation is owned by the
+                // cancelDisplay state machine (see cancel()); setting errorMsg
+                // or firing a failure notification here would render a
+                // contradictory green "停止しました" + red "失敗" at once.
             } else {
                 errorMsg = r.error ?? "学習ステージ失敗: \(method)"
                 AppNotification.send(
@@ -522,6 +529,7 @@ struct TrainingView: View {
             "version": .string(version),
             "gpus": .string(gpus),
             "n_p": .number(nProcess),
+            "require_gpu": .bool(requireGPU),
         ])
     }
 
@@ -541,6 +549,7 @@ struct TrainingView: View {
             "gpus": .string(gpus),
             "if_cache_gpu": .bool(ifCacheGpu),
             "if_save_every_weights": .bool(ifSaveEveryWeights),
+            "require_gpu": .bool(requireGPU),
             "version": .string(version),
             "author": .string(author),
         ])

@@ -1,4 +1,5 @@
 from io import BytesIO
+import logging
 import os
 from typing import Union, Literal, Optional
 from pathlib import Path
@@ -17,6 +18,8 @@ from torchaudio.transforms import Resample
 
 from rvc.f0 import Generator
 from rvc.synthesizer import load_synthesizer
+
+logger = logging.getLogger(__name__)
 
 
 class RVC:
@@ -55,9 +58,22 @@ class RVC:
         self.use_jit = use_jit
         self.is_half = is_half
 
-        if index_rate > 0:
-            self.index = faiss.read_index(index_path)
-            self.big_npy = self.index.reconstruct_n(0, self.index.ntotal)
+        # Eager-load the FAISS index whenever a valid index file is supplied,
+        # regardless of the initial index_rate. This moves the (potentially
+        # multi-second) faiss.read_index off the later set_index_rate() path,
+        # which runs on the RPC dispatch thread — loading it lazily there the
+        # first time the index_rate slider is raised would stall a concurrent
+        # cancel / realtime_stop / list_models until the read completes.
+        self.index = None
+        self.big_npy = None
+        if index_path and os.path.exists(index_path):
+            try:
+                self.index = faiss.read_index(index_path)
+                self.big_npy = self.index.reconstruct_n(0, self.index.ntotal)
+            except Exception:
+                logger.exception("failed to load faiss index: %s", index_path)
+                self.index = None
+                self.big_npy = None
 
         self.pth_path = pth_path
         self.index_path = index_path
@@ -140,9 +156,22 @@ class RVC:
         self.formant_shift = new_formant
 
     def set_index_rate(self, new_index_rate):
-        if new_index_rate > 0 and self.index_rate <= 0:
-            self.index = faiss.read_index(self.index_path)
-            self.big_npy = self.index.reconstruct_n(0, self.index.ntotal)
+        # The index is eager-loaded in __init__, so this is normally just a
+        # flag flip. Keep a defensive lazy load for the edge case where the
+        # index wasn't available at construction time.
+        if (
+            new_index_rate > 0
+            and self.index is None
+            and self.index_path
+            and os.path.exists(self.index_path)
+        ):
+            try:
+                self.index = faiss.read_index(self.index_path)
+                self.big_npy = self.index.reconstruct_n(0, self.index.ntotal)
+            except Exception:
+                logger.exception("failed to load faiss index: %s", self.index_path)
+                self.index = None
+                self.big_npy = None
         self.index_rate = new_index_rate
 
     def infer(
@@ -179,7 +208,11 @@ class RVC:
                 feats0 = feats.clone()
 
         try:
-            if hasattr(self, "index") and self.index_rate > 0:
+            if (
+                self.index is not None
+                and self.big_npy is not None
+                and self.index_rate > 0
+            ):
                 npy = feats[0][skip_head // 2 :].cpu().numpy()
                 if self.is_half:
                     npy = npy.astype("float32")
