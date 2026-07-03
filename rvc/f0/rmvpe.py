@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import onnxruntime as ort
 
+from infer.lib.safe_torch_load import load_weights
 from rvc.jit import load_inputs, get_jit_model, export_jit_model, save_pickle
 
 from .e2e import E2E
@@ -75,7 +76,7 @@ class RMVPE(F0Predictor):
 
         # Build the real 741-parameter RMVPE architecture and load its weights.
         model = E2E(n_blocks=4, n_gru=1, kernel_size=(2, 2))
-        state_dict = torch.load(model_path, map_location="cpu", weights_only=False)
+        state_dict = load_weights(model_path, map_location="cpu")
         model.load_state_dict(state_dict)
         model.eval()
         if is_half:

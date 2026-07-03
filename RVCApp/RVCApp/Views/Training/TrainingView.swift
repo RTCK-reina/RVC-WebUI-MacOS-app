@@ -178,6 +178,11 @@ struct TrainingView: View {
                     TextField("例: my_voice", text: $expName)
                         .textFieldStyle(.roundedBorder)
                 }
+                if let expNameError {
+                    Label(expNameError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 HStack {
                     Text("作者")
                         .frame(width: 100, alignment: .leading)
@@ -301,7 +306,11 @@ struct TrainingView: View {
     // MARK: - Helpers
 
     private var canRunPhase: Bool {
-        !isRunning && !expName.isEmpty && !trainsetDir.isEmpty
+        !isRunning && expNameError == nil && !trainsetDir.isEmpty
+    }
+
+    private var expNameError: String? {
+        PathValidation.leafNameError(expName, label: "実験名")
     }
 
     private var defaultTrainingDir: String? {

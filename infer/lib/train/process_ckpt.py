@@ -5,6 +5,8 @@ from time import time
 
 import torch
 
+from infer.lib.path_safety import safe_leaf_name
+from infer.lib.safe_torch_load import load_weights
 from i18n.i18n import I18nAuto
 from infer.modules.vc import model_hash_ckpt, hash_id
 
@@ -32,6 +34,7 @@ def _user_weight_path(basename: str) -> str:
     fresh install does not trip
     ``Parent directory assets/weights does not exist``.
     """
+    safe_basename = safe_leaf_name(basename, "model output name")
     root = os.environ.get("weight_root")
     if not root:
         user_dir = os.environ.get("RVC_USER_DIR")
@@ -40,7 +43,7 @@ def _user_weight_path(basename: str) -> str:
     if not root:
         root = "assets/weights"
     os.makedirs(root, exist_ok=True)
-    return os.path.join(root, basename)
+    return os.path.join(root, safe_basename)
 
 
 # add author sign
@@ -85,13 +88,13 @@ def save_small_model(ckpt, sr, if_f0, name, epoch, version, hps):
         opt["id"] = hash_id(h)
         torch.save(opt, _user_weight_path("%s.pth" % name))
         return "Success."
-    except:
-        return traceback.format_exc()
+    except Exception as e:
+        raise RuntimeError(traceback.format_exc()) from e
 
 
 def extract_small_model(path, name, author, sr, if_f0, info, version):
     try:
-        ckpt = torch.load(path, map_location="cpu")
+        ckpt = load_weights(path, map_location="cpu")
         if "model" in ckpt:
             # Raw training checkpoint (G_xxx.pth): unwrap to state_dict
             ckpt = ckpt["model"]
@@ -228,20 +231,20 @@ def extract_small_model(path, name, author, sr, if_f0, info, version):
         opt["id"] = hash_id(h)
         torch.save(opt, _user_weight_path("%s.pth" % name))
         return "Success."
-    except:
-        return traceback.format_exc()
+    except Exception as e:
+        raise RuntimeError(traceback.format_exc()) from e
 
 
 def change_info(path, info, name):
     try:
-        ckpt = torch.load(path, map_location="cpu")
+        ckpt = load_weights(path, map_location="cpu")
         ckpt["info"] = info
         if name == "":
             name = os.path.basename(path)
         torch.save(ckpt, _user_weight_path(name))
         return "Success."
-    except:
-        return traceback.format_exc()
+    except Exception as e:
+        raise RuntimeError(traceback.format_exc()) from e
 
 
 def merge(path1, path2, alpha1, sr, f0, info, name, version):
@@ -266,8 +269,8 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
                 a2 = "Unknown"
             return f"{a1} & {a2}"
 
-        ckpt1 = torch.load(path1, map_location="cpu")
-        ckpt2 = torch.load(path2, map_location="cpu")
+        ckpt1 = load_weights(path1, map_location="cpu")
+        ckpt2 = load_weights(path2, map_location="cpu")
         cfg = ckpt1["config"]
         author = authors(ckpt1, ckpt2)
         if "model" in ckpt1:
@@ -313,5 +316,5 @@ def merge(path1, path2, alpha1, sr, f0, info, name, version):
         opt["id"] = hash_id(h)
         torch.save(opt, _user_weight_path("%s.pth" % name))
         return "Success."
-    except:
-        return traceback.format_exc()
+    except Exception as e:
+        raise RuntimeError(traceback.format_exc()) from e

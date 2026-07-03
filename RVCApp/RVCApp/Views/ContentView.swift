@@ -114,7 +114,7 @@ private struct LaunchErrorOverlay: View {
 
     private var logFileURL: URL? {
         FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Logs/RVC-Swift/bridge.log")
+            .appendingPathComponent("Logs/\(AppState.userDirectoryName)/bridge.log")
     }
 
     var body: some View {

@@ -20,6 +20,7 @@ conda env, and restores state on teardown so subsequent test files
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 
 import pytest
@@ -131,8 +132,7 @@ def test_merge_extracts_raw_training_ckpt(
 ):
     """Regression guard for bug 1 (extract() shape mismatch).
 
-    Without the extract() fix, merge() catches AttributeError and returns
-    a traceback string instead of "Success.".
+    Without the extract() fix, merge() raises before returning "Success.".
     """
     mod, torch = real_process_ckpt
     monkeypatch.setenv("weight_root", str(tmp_path))
@@ -151,3 +151,38 @@ def test_merge_extracts_raw_training_ckpt(
     assert out.exists()
     loaded = torch.load(str(out), map_location="cpu")
     assert loaded["author"] == "Carol & Dave"
+
+
+def test_user_weight_path_rejects_path_traversal(tmp_path, monkeypatch, real_process_ckpt):
+    mod, _torch = real_process_ckpt
+    monkeypatch.setenv("weight_root", str(tmp_path / "models"))
+
+    with pytest.raises(ValueError):
+        mod._user_weight_path("../escape.pth")
+
+
+def test_extract_small_model_does_not_execute_malicious_checkpoint(
+    tmp_path, monkeypatch, real_process_ckpt
+):
+    """Real malicious pickle load attempt: safe loader must reject it.
+
+    The payload would create ``sentinel`` if unsafe pickle deserialization ran.
+    ``extract_small_model`` must fail closed and surface an exception while the
+    payload remains unexecuted.
+    """
+    mod, torch = real_process_ckpt
+    monkeypatch.setenv("weight_root", str(tmp_path / "models"))
+    sentinel = tmp_path / "payload-ran"
+
+    class Evil:
+        def __reduce__(self):
+            return (os.system, (f"touch {sentinel}",))
+
+    malicious = tmp_path / "evil.pth"
+    torch.save(Evil(), str(malicious))
+
+    with pytest.raises(RuntimeError):
+        mod.extract_small_model(
+            str(malicious), "safe_name", "author", "40k", 1, "info", "v2"
+        )
+    assert not sentinel.exists()

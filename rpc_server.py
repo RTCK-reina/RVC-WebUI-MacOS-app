@@ -105,6 +105,16 @@ import torch.nn.functional as F  # noqa: E402
 
 from configs import Config  # noqa: E402
 from infer.lib.audio import save_audio  # noqa: E402
+from infer.lib.path_safety import (  # noqa: E402
+    PathValidationError,
+    optional_dir_under,
+    optional_file_under,
+    require_env_root,
+    resolve_under,
+    safe_format,
+    safe_leaf_name,
+    safe_stem,
+)
 from infer.modules.vc import VC, show_info, hash_similarity  # noqa: E402
 from infer.modules.uvr5.modules import uvr  # noqa: E402
 from infer.lib.train.process_ckpt import (  # noqa: E402
@@ -503,22 +513,69 @@ def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-def _default_output_path(input_path: str, model_sid: str, fmt: str, subdir: str) -> str:
-    out_root = Path(os.environ.get("output_root") or (Path.home() / "Documents" / "RVC-Swift" / "output"))
+_AUDIO_OUTPUT_FORMATS = ("flac", "wav", "mp3", "m4a")
+
+
+def _output_root() -> Path:
+    return Path(
+        os.environ.get("output_root")
+        or (Path.home() / "Documents" / "RVC-WebUI" / "output")
+    ).expanduser().resolve()
+
+
+def _index_roots() -> list[Path]:
+    return [
+        Path(r).expanduser().resolve()
+        for r in (os.environ.get("outside_index_root"), os.environ.get("index_root"))
+        if r
+    ]
+
+
+def _resolve_under_any(roots: list[Path], value: object, field: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    errors = []
+    for root in roots:
+        try:
+            return str(resolve_under(root, raw, field))
+        except PathValidationError as exc:
+            errors.append(str(exc))
+    allowed = ", ".join(str(r) for r in roots) or "<none>"
+    raise PathValidationError(f"{field} must stay under one of: {allowed}")
+
+
+def _require_existing_file(value: object, field: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise PathValidationError(f"{field} is required")
+    path = Path(raw).expanduser().resolve()
+    if not path.is_file():
+        raise PathValidationError(f"{field} does not exist or is not a file: {raw}")
+    return str(path)
+
+
+def _default_output_path(input_path: str, model_sid: str, fmt: str, subdir: str) -> Path:
+    out_root = _output_root()
     out_dir = out_root / subdir
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = Path(input_path).stem
-    model_stem = Path(model_sid).stem if model_sid else "model"
-    return str(out_dir / f"{stem}_{model_stem}_{_timestamp()}.{fmt}")
+    stem = safe_stem(input_path, "input_audio_path", fallback="audio")
+    model_stem = safe_stem(model_sid, "sid", fallback="model")
+    return out_dir / f"{stem}_{model_stem}_{_timestamp()}.{fmt}"
 
 
 def rpc_vc_single(params: dict) -> dict:
     assert app_state is not None
     sid = params["sid"]
-    input_path = params["input_audio_path"]
-    fmt = params.get("format", "flac")
-    output_path = params.get("output_path") or _default_output_path(
+    input_path = _require_existing_file(params["input_audio_path"], "input_audio_path")
+    fmt = safe_format(params.get("format", "flac"), _AUDIO_OUTPUT_FORMATS)
+    file_index = _resolve_under_any(_index_roots(), params.get("file_index", ""), "file_index")
+    file_index2 = _resolve_under_any(_index_roots(), params.get("file_index2", ""), "file_index2")
+    default_output = _default_output_path(
         input_path, sid, fmt, "inference"
+    )
+    output_path = optional_file_under(
+        _output_root(), params.get("output_path"), "output_path", default=default_output
     )
 
     task_id = params.get("task_id", f"vc_single_{int(time.time()*1000)}")
@@ -543,8 +600,8 @@ def rpc_vc_single(params: dict) -> dict:
                     int(params.get("f0_up_key", 0)),
                     None,
                     params.get("f0_method", "rmvpe"),
-                    params.get("file_index", ""),
-                    params.get("file_index2", ""),
+                    file_index,
+                    file_index2,
                     float(params.get("index_rate", 0.75)),
                     int(params.get("filter_radius", 3)),
                     int(params.get("resample_sr", 0)),
@@ -575,13 +632,13 @@ def rpc_vc_single(params: dict) -> dict:
         # f32=True would cast int16 values into a float32 IEEE WAV where ±1.0 is full
         # scale — the ±32440 values then explode into 32440× overgain and clip hard
         # in every downstream player / FLAC re-encode. Keep f32=False for int16 PCM.
-        save_audio(output_path, audio_opt, tgt_sr, f32=False, format=fmt)
+        save_audio(str(output_path), audio_opt, tgt_sr, f32=False, format=fmt)
         emit_progress(task_id, 100, "Done", "inference")
 
         return {
             "status": "success",
             "info": info,
-            "output_path": output_path,
+            "output_path": str(output_path),
             "sample_rate": int(tgt_sr),
         }
     finally:
@@ -594,11 +651,15 @@ def rpc_vc_multi(params: dict) -> dict:
     sid = params["sid"]
     dir_path = params.get("dir_path", "") or ""
     paths = params.get("paths", []) or []
-    fmt = params.get("format", "flac")
-    out_root = params.get("output_dir") or str(
-        Path(os.environ.get("output_root") or (Path.home() / "Documents" / "RVC-Swift" / "output")) / "batch" / _timestamp()
+    fmt = safe_format(params.get("format", "flac"), _AUDIO_OUTPUT_FORMATS)
+    file_index = _resolve_under_any(_index_roots(), params.get("file_index", ""), "file_index")
+    file_index2 = _resolve_under_any(_index_roots(), params.get("file_index2", ""), "file_index2")
+    out_root = optional_dir_under(
+        _output_root(),
+        params.get("output_dir"),
+        "output_dir",
+        default=_output_root() / "batch" / _timestamp(),
     )
-    Path(out_root).mkdir(parents=True, exist_ok=True)
 
     task_id = params.get("task_id", f"vc_multi_{int(time.time()*1000)}")
     task = _register_task(task_id)
@@ -606,12 +667,18 @@ def rpc_vc_multi(params: dict) -> dict:
     try:
         # Collect files.
         if dir_path:
-            all_paths = [str(p) for p in Path(dir_path).iterdir() if p.is_file()]
+            input_dir = Path(dir_path).expanduser().resolve()
+            if not input_dir.is_dir():
+                raise PathValidationError(f"dir_path does not exist or is not a directory: {dir_path}")
+            all_paths = [str(p) for p in input_dir.iterdir() if p.is_file()]
         else:
-            all_paths = list(paths)
+            all_paths = [
+                _require_existing_file(p, f"paths[{i}]")
+                for i, p in enumerate(paths)
+            ]
         total = len(all_paths)
         if total == 0:
-            return {"status": "error", "info": "No input files"}
+            raise PathValidationError("No input files")
 
         results = []
         for i, path in enumerate(all_paths):
@@ -629,8 +696,8 @@ def rpc_vc_multi(params: dict) -> dict:
                 int(params.get("f0_up_key", 0)),
                 None,
                 params.get("f0_method", "rmvpe"),
-                params.get("file_index", ""),
-                params.get("file_index2", ""),
+                file_index,
+                file_index2,
                 float(params.get("index_rate", 0.75)),
                 int(params.get("filter_radius", 3)),
                 int(params.get("resample_sr", 0)),
@@ -640,15 +707,15 @@ def rpc_vc_multi(params: dict) -> dict:
             if opt is not None:
                 tgt_sr, audio_opt = opt
                 model_stem = Path(sid).stem if sid else "model"
-                out_name = f"{Path(path).stem}_{model_stem}.{fmt}"
-                out_path = str(Path(out_root) / out_name)
+                out_name = f"{safe_stem(path, 'input path', fallback='audio')}_{safe_stem(model_stem, 'sid', fallback='model')}.{fmt}"
+                out_path = out_root / out_name
                 # See rpc_vc_single above: audio_opt is int16-scale, so f32=False.
-                save_audio(out_path, audio_opt, tgt_sr, f32=False, format=fmt)
-                results.append({"input": path, "output": out_path, "info": info})
+                save_audio(str(out_path), audio_opt, tgt_sr, f32=False, format=fmt)
+                results.append({"input": path, "output": str(out_path), "info": info})
             else:
                 results.append({"input": path, "output": None, "info": info})
         emit_progress(task_id, 100, f"Completed {total} files", "batch")
-        return {"status": "success", "results": results, "output_dir": out_root}
+        return {"status": "success", "results": results, "output_dir": str(out_root)}
     finally:
         _unregister_task(task_id)
         app_state.status("idle")
@@ -764,38 +831,56 @@ def rpc_uvr5(params: dict) -> dict:
     cancellation can terminate() it immediately — even mid-file.
     """
     assert app_state is not None
-    model_name = params["model_name"]
+    model_name = safe_leaf_name(params["model_name"], "model_name")
     inp_root = params.get("input_dir", "") or ""
     paths = params.get("paths", []) or []
-    base_vocal = params.get("output_vocal") or str(
-        Path(os.environ.get("output_root") or "") / "separation" / "vocals"
+    base_vocal = optional_dir_under(
+        _output_root(),
+        params.get("output_vocal"),
+        "output_vocal",
+        default=_output_root() / "separation" / "vocals",
     )
-    base_ins = params.get("output_accompaniment") or str(
-        Path(os.environ.get("output_root") or "") / "separation" / "accompaniment"
+    base_ins = optional_dir_under(
+        _output_root(),
+        params.get("output_accompaniment"),
+        "output_accompaniment",
+        default=_output_root() / "separation" / "accompaniment",
     )
     from datetime import datetime as _dt
     session_stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
-    save_root_vocal = str(Path(base_vocal) / session_stamp)
-    save_root_ins = str(Path(base_ins) / session_stamp)
+    save_root_vocal = str(base_vocal / session_stamp)
+    save_root_ins = str(base_ins / session_stamp)
     Path(save_root_vocal).mkdir(parents=True, exist_ok=True)
     Path(save_root_ins).mkdir(parents=True, exist_ok=True)
     agg = int(params.get("agg", 10))
-    fmt = params.get("format", "flac")
+    fmt = safe_format(params.get("format", "flac"), _AUDIO_OUTPUT_FORMATS)
     polish_model = (params.get("polish_model") or "").strip()
-
-    task_id = params.get("task_id", f"uvr5_{int(time.time()*1000)}")
-    task = _register_task(task_id)
-    app_state.status("separating")
+    if polish_model:
+        polish_model = safe_leaf_name(polish_model, "polish_model")
 
     from infer.modules.uvr5.modules import _is_audio_file
     if inp_root:
+        inp_dir = Path(inp_root).expanduser().resolve()
+        if not inp_dir.is_dir():
+            return {"status": "error", "error": f"Input directory not found: {inp_root}"}
+        inp_root = str(inp_dir)
         input_paths = [
-            str(p) for p in Path(inp_root).iterdir()
+            str(p) for p in inp_dir.iterdir()
             if p.is_file() and _is_audio_file(p.name, strict=True)
         ]
     else:
         raw = [p if isinstance(p, str) else p.get("name") for p in paths]
-        input_paths = [p for p in raw if p and _is_audio_file(p, strict=False)]
+        input_paths = [
+            _require_existing_file(p, f"paths[{i}]")
+            for i, p in enumerate(raw)
+            if p and _is_audio_file(p, strict=False)
+        ]
+    if not input_paths:
+        raise PathValidationError("No input audio files")
+
+    task_id = params.get("task_id", f"uvr5_{int(time.time()*1000)}")
+    task = _register_task(task_id)
+    app_state.status("separating")
 
     try:
         result = _run_in_subprocess(
@@ -815,14 +900,18 @@ def rpc_uvr5(params: dict) -> dict:
 
 def rpc_model_info(params: dict) -> dict:
     path = params["path"]
-    return {"info": show_info(path)}
+    info = show_info(path)
+    status = "error" if info.lstrip().startswith("Traceback") else "success"
+    return {"status": status, "info": info, "error": info if status == "error" else None}
 
 
 def rpc_model_change_info(params: dict) -> dict:
     path = params["path"]
     info = params.get("info", "")
     name = params.get("name", "")
-    return {"result": change_info(path, info, name)}
+    result = change_info(path, info, name)
+    status = "success" if result == "Success." else "error"
+    return {"status": status, "result": result, "error": None if status == "success" else result}
 
 
 def rpc_model_compare(params: dict) -> dict:
@@ -876,7 +965,7 @@ def _run_with_progress(task_id: str, phase: str, fn, *args, **kwargs):
 
 def rpc_model_merge(params: dict) -> dict:
     task_id = params.get("task_id", f"model_merge_{int(time.time()*1000)}")
-    return _run_with_progress(
+    result = _run_with_progress(
         task_id, "merge",
         merge,
         params["path_a"],
@@ -888,6 +977,12 @@ def rpc_model_merge(params: dict) -> dict:
         params.get("name", ""),
         params.get("version", "v2"),
     )
+    value = result.get("result")
+    status = "success" if value == "Success." else "error"
+    result["status"] = status
+    if status != "success":
+        result["error"] = str(value)
+    return result
 
 
 def rpc_model_extract(params: dict) -> dict:
@@ -901,7 +996,7 @@ def rpc_model_extract(params: dict) -> dict:
     else:
         _sr_map = {40000: "40k", 48000: "48k", 32000: "32k"}
         sr_key = _sr_map.get(int(raw_sr), "40k")
-    return _run_with_progress(
+    result = _run_with_progress(
         task_id, "extract",
         extract_small_model,
         params["ckpt_path"],
@@ -912,26 +1007,37 @@ def rpc_model_extract(params: dict) -> dict:
         params.get("info", ""),
         params.get("version", "v2"),
     )
+    value = result.get("result")
+    status = "success" if value == "Success." else "error"
+    result["status"] = status
+    if status != "success":
+        result["error"] = str(value)
+    return result
 
 
 def rpc_export_onnx(params: dict) -> dict:
     from rvc.onnx import export_onnx  # lazy import (heavy)
 
     ckpt_path = params["ckpt_path"]
-    output_path = params.get("output_path") or str(
-        Path(os.environ.get("output_root") or "")
+    default_output = (
+        _output_root()
         / "onnx"
-        / (Path(ckpt_path).stem + ".onnx")
+        / f"{safe_stem(ckpt_path, 'ckpt_path', fallback='model')}.onnx"
     )
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    output_path = optional_file_under(
+        _output_root(),
+        params.get("output_path"),
+        "output_path",
+        default=default_output,
+    )
     task_id = params.get("task_id", f"export_onnx_{int(time.time()*1000)}")
     result = _run_with_progress(
         task_id, "onnx",
-        export_onnx, ckpt_path, output_path,
+        export_onnx, ckpt_path, str(output_path),
     )
     if result.get("status") == "cancelled":
         return result
-    return {"status": "success", "output_path": output_path}
+    return {"status": "success", "output_path": str(output_path)}
 
 
 def rpc_list_audio_devices(params: dict) -> dict:
@@ -1307,8 +1413,9 @@ def rpc_realtime_start(params: dict) -> dict:
             pass
         app_state.realtime = None
 
-    pth_path = params.get("pth_path", "")
-    index_path = params.get("index_path", "")
+    weight_root = require_env_root("weight_root")
+    pth_path = _resolve_under_any([weight_root], params.get("pth_path", ""), "pth_path")
+    index_path = _resolve_under_any(_index_roots(), params.get("index_path", ""), "index_path")
     pitch = params.get("pitch", 0)
     formant = params.get("formant", 0)
     index_rate = params.get("index_rate", 0)
@@ -1529,6 +1636,11 @@ def _dispatch(request: dict) -> None:
         else:
             result = fn(params)
         send_response(req_id, result)
+    except PathValidationError as e:
+        # Domain-level validation failure: invalid params, not a server bug.
+        # No traceback — the message alone is what the UI should surface.
+        logger.error("RPC validation error in %s: %s", method, e)
+        send_error(req_id, -32602, str(e))
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("RPC error in %s: %s\n%s", method, e, tb)

@@ -9,6 +9,7 @@ import torch
 from io import BytesIO
 
 from infer.lib.audio import load_audio, wav2, save_audio, float_np_array_to_wav_buf
+from infer.lib.path_safety import require_env_root, resolve_under
 from rvc.synthesizer import get_synthesizer, load_synthesizer
 from .info import show_model_info
 from .pipeline import Pipeline
@@ -86,7 +87,10 @@ class VC:
                     torch.mps.empty_cache()
             return {"loaded": False}
 
-        person = f'{os.getenv("weight_root")}/{sid}'
+        weight_root = require_env_root("weight_root")
+        person = str(resolve_under(weight_root, sid, "sid"))
+        if not os.path.isfile(person):
+            raise FileNotFoundError(f"Model file not found under weight_root: {sid}")
         logger.info(f"Loading: {person}")
         self.net_g, self.cpt = load_synthesizer(person, self.config.device)
         self.tgt_sr = self.cpt["config"][-1]
@@ -172,7 +176,10 @@ class VC:
                 else {"visible": True, "maximum": 0, "__type__": "update"}
             )
 
-        person = f'{os.getenv("weight_root")}/{sid}'
+        weight_root = require_env_root("weight_root")
+        person = str(resolve_under(weight_root, sid, "sid"))
+        if not os.path.isfile(person):
+            raise FileNotFoundError(f"Model file not found under weight_root: {sid}")
         logger.info(f"Loading: {person}")
 
         self.net_g, self.cpt = load_synthesizer(person, self.config.device)

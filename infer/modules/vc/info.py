@@ -3,6 +3,7 @@ from i18n.i18n import I18nAuto
 from datetime import datetime
 import torch
 
+from infer.lib.safe_torch_load import load_weights
 from .hash import model_hash_ckpt, hash_id, hash_similarity
 
 i18n = I18nAuto()
@@ -65,7 +66,7 @@ def show_model_info(cpt, show_long_id=False):
             id,
             h,
         )
-    except:
+    except Exception:
         txt = traceback.format_exc()
 
     return txt
@@ -75,10 +76,10 @@ def show_info(path):
     try:
         if hasattr(path, "name"):
             path = path.name
-        a = torch.load(path, map_location="cpu")
+        a = load_weights(path, map_location="cpu")
         txt = show_model_info(a, show_long_id=True)
         del a
-    except:
+    except Exception:
         txt = traceback.format_exc()
 
     return txt

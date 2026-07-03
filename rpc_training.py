@@ -21,6 +21,8 @@ from typing import Callable, Dict, Optional
 
 import numpy as np
 
+from infer.lib.path_safety import PathValidationError, safe_format, safe_leaf_name
+
 try:
     import psutil  # type: ignore
 except Exception:
@@ -30,6 +32,8 @@ logger = logging.getLogger("rpc_training")
 
 # sr name -> Hz (mirrors web.py sr_dict)
 _SR_DICT = {"32k": 32000, "40k": 40000, "48k": 48000}
+_VERSIONS = ("v1", "v2")
+_F0_METHODS = ("pm", "harvest", "dio", "rmvpe", "rmvpe_gpu", "crepe", "fcpe")
 
 
 # ---------------------------------------------------------------------------
@@ -51,9 +55,29 @@ def _bundle_python_cmd(config) -> str:
 
 def _exp_dir(config, exp_name: str) -> Path:
     """Experiment directory under the user dir (writable)."""
-    p = Path(config.user_dir) / "logs" / exp_name
+    safe_name = safe_leaf_name(exp_name, "exp_name")
+    p = Path(config.user_dir) / "logs" / safe_name
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _require_existing_dir(value: str, field: str) -> str:
+    path = Path(value).expanduser()
+    if not path.is_dir():
+        raise PathValidationError(f"{field} does not exist or is not a directory: {value}")
+    return str(path.resolve())
+
+
+def _safe_sr_name(value: object) -> str:
+    return safe_format(value or "40k", _SR_DICT.keys(), "sr")
+
+
+def _safe_version(value: object) -> str:
+    return safe_format(value or "v2", _VERSIONS, "version")
+
+
+def _safe_f0_method(value: object) -> str:
+    return safe_format(value or "rmvpe", _F0_METHODS, "f0_method")
 
 
 def _spawn(cmd: list, cwd: str, log_path: Path) -> subprocess.Popen:
@@ -386,9 +410,9 @@ def rpc_preprocess(params: dict, ctx):
     unregister_task = ctx["unregister_task"]
     status = ctx["status"]
 
-    exp_name = params["exp_name"]
-    trainset_dir = params["trainset_dir"]
-    sr_name = params.get("sr", "40k")
+    exp_name = safe_leaf_name(params["exp_name"], "exp_name")
+    trainset_dir = _require_existing_dir(params["trainset_dir"], "trainset_dir")
+    sr_name = _safe_sr_name(params.get("sr", "40k"))
     n_p = int(params.get("n_p", max(1, config.n_cpu)))
     task_id = params.get("task_id", f"preprocess_{int(time.time()*1000)}")
 
@@ -457,10 +481,10 @@ def rpc_extract_f0(params: dict, ctx):
     unregister_task = ctx["unregister_task"]
     status = ctx["status"]
 
-    exp_name = params["exp_name"]
-    f0_method = params.get("f0_method", "rmvpe")
+    exp_name = safe_leaf_name(params["exp_name"], "exp_name")
+    f0_method = _safe_f0_method(params.get("f0_method", "rmvpe"))
     if_f0 = bool(params.get("if_f0", True))
-    version = params.get("version", "v2")
+    version = _safe_version(params.get("version", "v2"))
     # For rpc usage we assume single GPU (or MPS / CPU). Comma-separated gpus
     # may still be supplied for CUDA boxes.
     gpus = params.get("gpus", "0").strip()
@@ -569,8 +593,8 @@ def rpc_train(params: dict, ctx):
     unregister_task = ctx["unregister_task"]
     status = ctx["status"]
 
-    exp_name = params["exp_name"]
-    sr_name = params.get("sr", "40k")
+    exp_name = safe_leaf_name(params["exp_name"], "exp_name")
+    sr_name = _safe_sr_name(params.get("sr", "40k"))
     if_f0 = bool(params.get("if_f0", True))
     spk_id = int(params.get("spk_id", 0))
     save_epoch = int(params.get("save_epoch", 5))
@@ -582,7 +606,7 @@ def rpc_train(params: dict, ctx):
     gpus = params.get("gpus", "")
     if_cache_gpu = bool(params.get("if_cache_gpu", False))
     if_save_every_weights = bool(params.get("if_save_every_weights", True))
-    version = params.get("version", "v2")
+    version = _safe_version(params.get("version", "v2"))
     author = params.get("author", "")
     task_id = params.get("task_id", f"train_{int(time.time()*1000)}")
 
@@ -767,8 +791,8 @@ def rpc_train_index(params: dict, ctx):
     unregister_task = ctx["unregister_task"]
     status = ctx["status"]
 
-    exp_name = params["exp_name"]
-    version = params.get("version", "v2")
+    exp_name = safe_leaf_name(params["exp_name"], "exp_name")
+    version = _safe_version(params.get("version", "v2"))
     task_id = params.get("task_id", f"train_index_{int(time.time()*1000)}")
 
     import faiss  # heavy, imported lazily

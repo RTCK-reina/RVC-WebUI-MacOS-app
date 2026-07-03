@@ -3,6 +3,8 @@ from io import BytesIO
 
 import torch
 
+from infer.lib.safe_torch_load import load_weights
+
 from .layers.synthesizers import SynthesizerTrnMsNSFsid
 from .jit import load_inputs, export_jit_model, save_pickle
 
@@ -32,7 +34,7 @@ def load_synthesizer(
     pth_path: str | BytesIO, device=torch.device("cpu")
 ):
     return get_synthesizer(
-        torch.load(pth_path, map_location=torch.device("cpu"), weights_only=True),
+        load_weights(pth_path),
         device,
     )
 

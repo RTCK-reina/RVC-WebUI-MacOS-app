@@ -86,10 +86,15 @@ struct ModelMergeView: View {
                     Text("v1").tag("v1"); Text("v2").tag("v2")
                 }
                 TextField("新モデル名", text: $name)
+                if let nameError {
+                    Label(nameError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 TextField("備考", text: $info)
                 Button("融合実行") { Task { await run() } }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isRunning || pathA.isEmpty || pathB.isEmpty || name.isEmpty)
+                    .disabled(isRunning || pathA.isEmpty || pathB.isEmpty || nameError != nil)
                 if !taskID.isEmpty {
                     // Model merge is a single torch.save call — cannot be
                     // interrupted mid-flight.
@@ -116,7 +121,11 @@ struct ModelMergeView: View {
             taskID = ""
         }
         do {
-            struct R: Decodable { let result: String? }
+            struct R: Decodable {
+                let status: String?
+                let result: String?
+                let error: String?
+            }
             let r: R = try await bridge.call("model_merge",
                 params: JSONValue.object([
                     "task_id": .string(id),
@@ -129,8 +138,16 @@ struct ModelMergeView: View {
                     "name": .string(name),
                     "version": .string(version),
                 ]), timeout: 3600)
-            resultMsg = r.result
+            if r.status == "error" {
+                errorMsg = r.error ?? r.result ?? "融合に失敗しました"
+            } else {
+                resultMsg = r.result
+            }
         } catch { errorMsg = error.localizedDescription }
+    }
+
+    private var nameError: String? {
+        PathValidation.leafNameError(name, label: "新モデル名")
     }
 }
 
@@ -168,11 +185,20 @@ struct ModelInfoView: View {
 
     private func run() async {
         errorMsg = nil
+        info = ""
         do {
-            struct R: Decodable { let info: String }
+            struct R: Decodable {
+                let status: String?
+                let info: String
+                let error: String?
+            }
             let r: R = try await bridge.call("model_info",
                 params: JSONValue.object(["path": .string(path)]))
-            info = r.info
+            if r.status == "error" {
+                errorMsg = r.error ?? r.info
+            } else {
+                info = r.info
+            }
         } catch { errorMsg = error.localizedDescription }
     }
 }
@@ -199,6 +225,11 @@ struct ModelExtractView: View {
                 FilePickerField(label: "チェックポイント (.pth)",
                     path: $ckpt, allowedContentTypes: [])
                 TextField("新モデル名", text: $name)
+                if let nameError {
+                    Label(nameError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 TextField("備考", text: $info)
                 Picker("サンプリングレート", selection: $sr) {
                     Text("32000").tag(32000); Text("40000").tag(40000); Text("48000").tag(48000)
@@ -209,7 +240,7 @@ struct ModelExtractView: View {
                 }
                 Button("抽出") { Task { await run() } }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isRunning || ckpt.isEmpty || name.isEmpty)
+                    .disabled(isRunning || ckpt.isEmpty || nameError != nil)
                 if !taskID.isEmpty {
                     // Extract is a single ckpt save — cannot be interrupted.
                     ProgressBarView(taskID: taskID, title: "抽出中")
@@ -233,7 +264,11 @@ struct ModelExtractView: View {
             taskID = ""
         }
         do {
-            struct R: Decodable { let result: String? }
+            struct R: Decodable {
+                let status: String?
+                let result: String?
+                let error: String?
+            }
             let r: R = try await bridge.call("model_extract",
                 params: JSONValue.object([
                     "task_id": .string(id),
@@ -244,8 +279,16 @@ struct ModelExtractView: View {
                     "info": .string(info),
                     "version": .string(version),
                 ]), timeout: 3600)
-            msg = r.result
+            if r.status == "error" {
+                errorMsg = r.error ?? r.result ?? "抽出に失敗しました"
+            } else {
+                msg = r.result
+            }
         } catch { errorMsg = error.localizedDescription }
+    }
+
+    private var nameError: String? {
+        PathValidation.leafNameError(name, label: "新モデル名")
     }
 }
 
@@ -269,9 +312,14 @@ struct OnnxExportView: View {
                 FilePickerField(label: "出力先 (.onnx)",
                     path: $output, allowedContentTypes: [],
                     initialDir: defaultOutputDir)
+                if let outputPathError {
+                    Label(outputPathError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 Button("エクスポート") { Task { await run() } }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isRunning || ckpt.isEmpty)
+                    .disabled(isRunning || ckpt.isEmpty || outputPathError != nil)
                 if !taskID.isEmpty {
                     // ONNX export is a single torch.onnx.export call.
                     ProgressBarView(taskID: taskID, title: "ONNX 出力中")
@@ -287,6 +335,13 @@ struct OnnxExportView: View {
 
     private var defaultOutputDir: String? {
         (bridge.initialInfo?["paths"]?["output_root"]?.stringValue).flatMap { $0 + "/onnx" }
+    }
+
+    private var outputPathError: String? {
+        PathValidation.outputRootError(
+            output,
+            root: bridge.initialInfo?["paths"]?["output_root"]?.stringValue,
+            label: "出力先")
     }
 
     private func run() async {

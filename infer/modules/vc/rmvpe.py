@@ -12,7 +12,7 @@ class RMVPE(nn.Module):
             raise FileNotFoundError(f"Model file not found: {model_path}")
         
         try:
-            self.model = torch.jit.load(model_path, map_location=device, weights_only=False)
+            self.model = torch.jit.load(model_path, map_location=device)
             self.model.eval()
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {str(e)}")
@@ -41,4 +41,4 @@ class RMVPE(nn.Module):
             output_names=['output'],
             dynamic_axes={'input': {0: 'batch_size'},
                          'output': {0: 'batch_size'}}
-        ) 
+        )

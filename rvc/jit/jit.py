@@ -5,6 +5,8 @@ import os
 
 import torch
 
+from infer.lib.safe_torch_load import load_weights
+
 
 class _SafeJITUnpickler(pickle.Unpickler):
     """Restrict globals allowed during JIT cache unpickling.
@@ -48,7 +50,7 @@ def save_pickle(ckpt: dict, save_path: str):
 
 
 def load_inputs(path: str | BytesIO, device: str, is_half=False):
-    parm = torch.load(path, map_location=torch.device("cpu"))
+    parm = load_weights(path, map_location=torch.device("cpu"))
     for key in parm.keys():
         parm[key] = parm[key].to(device)
         if is_half and parm[key].dtype == torch.float32:

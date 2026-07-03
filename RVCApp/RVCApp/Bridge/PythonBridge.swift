@@ -127,7 +127,7 @@ final class PythonBridge: ObservableObject {
     private var stderrTail = ""
     private let stderrTailMaxLen = 8192
     /// Log file mirroring stderr for post-mortem debugging. Lives under
-    /// ~/Library/Logs/RVC-Swift/.
+    /// ~/Library/Logs/RVC-WebUI/.
     private var logFileHandle: FileHandle?
 
     // MARK: - Public lifecycle
@@ -136,7 +136,7 @@ final class PythonBridge: ObservableObject {
     ///  - `pythonExec`: absolute path to the bundled python3 binary
     ///  - `serverScript`: absolute path to rpc_server.py
     ///  - `baseDir`: read-only bundle dir (Contents/Resources)
-    ///  - `userDir`: writable per-user dir (~/Documents/RVC-Swift by default)
+    ///  - `userDir`: writable per-user dir (~/Documents/RVC-WebUI by default)
     func start(
         pythonExec: String,
         serverScript: String,
@@ -260,7 +260,7 @@ final class PythonBridge: ObservableObject {
             let tail = String(stderrTail.suffix(1500))
             return PythonBridgeError.launchFailed(
                 "Python backend did not respond in time.\n" +
-                "ログ: ~/Library/Logs/RVC-Swift/bridge.log\n\n" +
+                "ログ: ~/Library/Logs/RVC-WebUI/bridge.log\n\n" +
                 "--- Python stderr (末尾) ---\n\(tail)")
         }
         return error
@@ -476,24 +476,48 @@ final class PythonBridge: ObservableObject {
         var payload = encoded
         payload.append(0x0A)  // newline
 
-        return try await withThrowingTaskGroup(of: JSONValue.self) { group in
-            group.addTask { [weak self] in
-                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in
-                    Task { @MainActor [weak self] in
-                        self?.pendingRequests[id] = cont
+        let timeoutTask = Task { [weak self] in
+            let seconds = max(0, timeout)
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self, let cont = self.pendingRequests.removeValue(forKey: id) else {
+                    return
+                }
+                cont.resume(throwing: PythonBridgeError.timeout)
+            }
+        }
+        defer { timeoutTask.cancel() }
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in
+                pendingRequests[id] = cont
+                // If the caller was cancelled before we registered, onCancel has
+                // already fired against an empty map and will never fire again —
+                // resume here or the continuation would dangle until timeout.
+                if Task.isCancelled {
+                    if pendingRequests.removeValue(forKey: id) != nil {
+                        cont.resume(throwing: CancellationError())
                     }
-                    try? stdin.fileHandleForWriting.write(contentsOf: payload)
+                    return
+                }
+                do {
+                    try stdin.fileHandleForWriting.write(contentsOf: payload)
+                } catch {
+                    if pendingRequests.removeValue(forKey: id) != nil {
+                        cont.resume(throwing: PythonBridgeError.launchFailed(
+                            "stdin write failed: \(error.localizedDescription)"
+                        ))
+                    }
                 }
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw PythonBridgeError.timeout
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                guard let self, let cont = self.pendingRequests.removeValue(forKey: id) else {
+                    return
+                }
+                cont.resume(throwing: CancellationError())
             }
-            guard let result = try await group.next() else {
-                throw PythonBridgeError.invalidResponse("No response task produced a value")
-            }
-            group.cancelAll()
-            return result
         }
     }
 
@@ -643,7 +667,7 @@ final class PythonBridge: ObservableObject {
     private func openLogFile() {
         let fm = FileManager.default
         let libLogs = fm.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Logs/RVC-Swift", isDirectory: true)
+            .appendingPathComponent("Logs/\(AppState.userDirectoryName)", isDirectory: true)
         guard let dir = libLogs else { return }
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("bridge.log")

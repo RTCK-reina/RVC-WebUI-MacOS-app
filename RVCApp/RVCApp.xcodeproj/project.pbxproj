@@ -24,6 +24,7 @@
 		C7A1D64131167F1C23B66A82 /* JSONRPCModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D868D1FD6FF655167A4D3411 /* JSONRPCModels.swift */; };
 		D2CA73E806D849B2C6C3174F /* StatusBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 024A7908982D47AC86996809 /* StatusBarView.swift */; };
 		E71F4866D1B200EBDA757261 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DCAFCB1E2BBF2A215B3C2EB /* AppState.swift */; };
+		F0FDD89C754EEA90676F376C /* PathValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0D84B4F7F072A769E3B78A /* PathValidation.swift */; };
 		F46E970915C17F16998A5C12 /* FilePickerField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 614864FDD09566BD41146B79 /* FilePickerField.swift */; };
 		FA5E46CED38CAFEE953604FF /* ProgressBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27005ECB67927E719605B20 /* ProgressBarView.swift */; };
 /* End PBXBuildFile section */
@@ -37,6 +38,7 @@
 		3E2425BDC2A1B3DC14206824 /* RVCAppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RVCAppMain.swift; sourceTree = "<group>"; };
 		41752C4D63E4AA1801F684F4 /* RealtimeVCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVCView.swift; sourceTree = "<group>"; };
 		5634D8BD2D551688EFFC22DC /* SeparationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeparationView.swift; sourceTree = "<group>"; };
+		5C0D84B4F7F072A769E3B78A /* PathValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathValidation.swift; sourceTree = "<group>"; };
 		614864FDD09566BD41146B79 /* FilePickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePickerField.swift; sourceTree = "<group>"; };
 		62F003768F7DBB0791584740 /* AppNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNotification.swift; sourceTree = "<group>"; };
 		6A760FD509DD6FF4294F769F /* RVCApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RVCApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -135,6 +137,7 @@
 				62F003768F7DBB0791584740 /* AppNotification.swift */,
 				8DCAFCB1E2BBF2A215B3C2EB /* AppState.swift */,
 				D868D1FD6FF655167A4D3411 /* JSONRPCModels.swift */,
+				5C0D84B4F7F072A769E3B78A /* PathValidation.swift */,
 				D22BB0C9E2405F2F42B9D2B0 /* RealtimeMetrics.swift */,
 				85B2801DCF94E3DF8293C83A /* ResourceStats.swift */,
 				AE3FC1385F99E7AEB33F617F /* TaskProgress.swift */,
@@ -232,6 +235,7 @@
 				F46E970915C17F16998A5C12 /* FilePickerField.swift in Sources */,
 				C7A1D64131167F1C23B66A82 /* JSONRPCModels.swift in Sources */,
 				82C6D4CD291EB2CFC699F357 /* ModelManagementViews.swift in Sources */,
+				F0FDD89C754EEA90676F376C /* PathValidation.swift in Sources */,
 				FA5E46CED38CAFEE953604FF /* ProgressBarView.swift in Sources */,
 				7136F7D58AD3C31A1C12D8C1 /* PythonBridge.swift in Sources */,
 				A8E3A409D2CE8660F8C9F04F /* RVCAppMain.swift in Sources */,

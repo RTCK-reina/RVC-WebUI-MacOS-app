@@ -120,6 +120,7 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
             preproc_results = list(pool.map(_preprocess_file, abs_paths))
 
         # モデル推論（シリアル）
+        failures = []
         for inp_path, was_reformatted in preproc_results:
             if cancel_event is not None and cancel_event.is_set():
                 infos.append("Cancelled.")
@@ -131,7 +132,8 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                 )
                 infos.append("%s->Success" % (os.path.basename(inp_path)))
                 yield "\n".join(infos)
-            except:
+            except Exception:
+                failures.append(inp_path)
                 infos.append(
                     "%s->%s" % (os.path.basename(inp_path), traceback.format_exc())
                 )
@@ -144,9 +146,14 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                         logger.warning(
                             "Failed to remove temporary file %s: %s", inp_path, e
                         )
-    except:
+        if failures:
+            raise RuntimeError(
+                "UVR failed for %s file(s): %s" % (len(failures), failures)
+            )
+    except Exception as exc:
         infos.append(traceback.format_exc())
         yield "\n".join(infos)
+        raise RuntimeError("UVR processing failed") from exc
     finally:
         try:
             if model_name == "onnx_dereverb_By_FoxJoy":
@@ -155,8 +162,8 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
             else:
                 del pre_fun.model
                 del pre_fun
-        except:
-            traceback.print_exc()
+        except Exception:
+            logger.warning("UVR cleanup failed:\n%s", traceback.format_exc())
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             logger.info("Executed torch.cuda.empty_cache()")

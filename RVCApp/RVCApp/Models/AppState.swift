@@ -4,7 +4,16 @@ import SwiftUI
 /// App-wide navigation + lifecycle state.
 @MainActor
 final class AppState: ObservableObject {
-    @Published var selection: NavigationItem = .inferenceSingle
+    static let userDirectoryName = "RVC-WebUI"
+    private static let selectionDefaultsKey = "app.selection"
+
+    @Published var selection: NavigationItem {
+        didSet {
+            UserDefaults.standard.set(
+                selection.storageKey,
+                forKey: Self.selectionDefaultsKey)
+        }
+    }
     @Published var launchError: String?
     @Published var isLaunching: Bool = true
 
@@ -12,6 +21,13 @@ final class AppState: ObservableObject {
     /// falling back to dev-tree paths so the Swift app is runnable from Xcode
     /// without a full bundle build.
     private var didBootstrap = false
+
+    init() {
+        selection = NavigationItem(
+            storageKey: UserDefaults.standard.string(
+                forKey: Self.selectionDefaultsKey))
+            ?? .inferenceSingle
+    }
 
     func bootstrap(bridge: PythonBridge) async {
         guard !didBootstrap else { return }
@@ -124,7 +140,7 @@ final class AppState: ObservableObject {
             for: .documentDirectory, in: .userDomainMask
         ).first
         let root = docs ?? URL(fileURLWithPath: NSHomeDirectory())
-        return root.appendingPathComponent("RVC-Swift").path
+        return root.appendingPathComponent(Self.userDirectoryName).path
     }
 
     private func ensureUserDir(_ path: String) throws {
@@ -163,7 +179,38 @@ enum NavigationItem: Hashable, Identifiable {
     case onnxExport
     case realtimeVC
 
-    var id: Int { hashValue }
+    var id: String { storageKey }
+
+    init?(storageKey: String?) {
+        switch storageKey {
+        case "inferenceSingle": self = .inferenceSingle
+        case "inferenceBatch":  self = .inferenceBatch
+        case "separation":      self = .separation
+        case "training":        self = .training
+        case "modelsCompare":   self = .modelsCompare
+        case "modelsMerge":     self = .modelsMerge
+        case "modelsInfo":      self = .modelsInfo
+        case "modelsExtract":   self = .modelsExtract
+        case "onnxExport":      self = .onnxExport
+        case "realtimeVC":      self = .realtimeVC
+        default: return nil
+        }
+    }
+
+    var storageKey: String {
+        switch self {
+        case .inferenceSingle: return "inferenceSingle"
+        case .inferenceBatch:  return "inferenceBatch"
+        case .separation:      return "separation"
+        case .training:        return "training"
+        case .modelsCompare:   return "modelsCompare"
+        case .modelsMerge:     return "modelsMerge"
+        case .modelsInfo:      return "modelsInfo"
+        case .modelsExtract:   return "modelsExtract"
+        case .onnxExport:      return "onnxExport"
+        case .realtimeVC:      return "realtimeVC"
+        }
+    }
 
     var title: String {
         switch self {
