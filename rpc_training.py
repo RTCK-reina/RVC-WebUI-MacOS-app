@@ -1107,8 +1107,13 @@ def rpc_train_index(params: dict, ctx):
         infos.append(f"built: {index_save_path}")
 
         # Symlink / copy into outside_index_root (user-visible).
-        outside_root = Path(os.environ.get("outside_index_root") or "")
-        if outside_root:
+        # Check the ENV STRING, not Path(""): Path("") resolves to "." which
+        # is truthy, so an unset var would silently link indexes into the
+        # process cwd. Config sets this for the app, but standalone/
+        # subprocess invocations may not have it.
+        outside_root_env = os.environ.get("outside_index_root") or ""
+        if outside_root_env:
+            outside_root = Path(outside_root_env)
             outside_root.mkdir(parents=True, exist_ok=True)
             link_target = outside_root / (
                 "%s_IVF%s_Flat_nprobe_%s_%s_%s.index"

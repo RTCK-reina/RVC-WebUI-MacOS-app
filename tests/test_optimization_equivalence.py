@@ -14,7 +14,8 @@ torch = pytest.importorskip("torch")
 # tests/conftest.py stubs torch (and friends) with MagicMock so the suite can
 # run without the ML environment. Numerical equivalence cannot be proven
 # against mocks — run this module with the real bundled env instead:
-#   build/python_env/bin/python -m pytest <copy of this file outside tests/>
+#   tools/run_equivalence_tests.sh
+# (or manually: build/python_env/bin/python -m pytest <copy outside tests/>)
 if "mock" in str(getattr(torch, "__version__", "")) or not hasattr(torch, "allclose"):
     pytest.skip(
         "real torch required (stubbed test harness detected)",
