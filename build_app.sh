@@ -244,10 +244,22 @@ if [[ $SKIP_SIGN -eq 0 ]]; then
     # reliably cover arbitrary executables under Resources/, which breaks
     # notarization for Developer ID distribution.
     echo "==> Code signing bundled executables"
+    # Hardened-runtime flag only with a REAL identity. With ad-hoc signing
+    # (IDENTITY='-') the runtime flag turns on library validation keyed on
+    # Team ID — ad-hoc files have no team, so the interpreter rejects every
+    # bundled .so at dlopen with "different Team IDs" (verified: _ctypes
+    # fails on first launch). Developer ID builds keep the flag (required
+    # for notarization) since all files then share one Team ID.
     while IFS= read -r -d '' exe; do
         if file -b "${exe}" 2>/dev/null | grep -q "Mach-O"; then
-            codesign --force --sign "${IDENTITY}" \
-                --options runtime --timestamp=none "${exe}" 2>/dev/null || true
+            if [[ "${IDENTITY}" == "-" ]]; then
+                codesign --force --sign - --timestamp=none \
+                    "${exe}" 2>/dev/null || true
+            else
+                codesign --force --sign "${IDENTITY}" \
+                    --options runtime --timestamp=none \
+                    "${exe}" 2>/dev/null || true
+            fi
         fi
     done < <(find "${RES_DIR}/python/bin" "${RES_DIR}/python/lib" \
         -type f -perm -u+x -not -name "*.so" -not -name "*.dylib" \
