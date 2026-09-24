@@ -2,6 +2,16 @@
 
 > 実装判断に必要な情報の収集結果。実装は行わない。
 
+## 実施状況 (2026-09-24 更新)
+
+| 項目 | 状態 | 備考 |
+|---|---|---|
+| C-1 | ✅ 実装済み (opt-in) | `train.grad_clip_norm` (デフォルト 0.0=無効)。`_grad_norm_or_clip` が clip 前ノルムを返すためログ値は従来と比較可能。有効化は config の値を >0 に |
+| C-2 | ✅ 実装済み (opt-in) | 既存 `train.warmup_epochs` (デフォルト 0) を実装に接続。絶対バッチ idx で ramp するため resume では再 warm しない |
+| C-3 | ❌ 実施しない | Swift プリセット (quality/balanced/speed) で手動選択済み。メモリからの自動逆算は DistributedBucketSampler のバケット前提を暗黙に変え得るためリスク大・検証困難 |
+| C-4 | ❌ 実施しない | 現行 `n_ivf = min(16√N, N//39)` は既に動的スケールしており、レビュー提案の固定 IVF256 より細かい。PQ 量子化は検索精度低下・faiss-cpu のみで恩恵薄い |
+| C-5 | ✅ 実装済み | `_index_kmeans_clusters`: N≤5120 生ベクタ / 中間 N//20 / ≥200k は従来の 10000 |
+
 ## C-1: Gradient Clipping の導入
 
 **現状**: `total_grad_norm()` (rvc/layers/utils.py:68) で勾配ノルムを計測・ログしているが、

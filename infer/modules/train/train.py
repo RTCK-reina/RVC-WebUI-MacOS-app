@@ -87,6 +87,20 @@ class GradScaler:
         pass
 
 
+def _grad_norm_or_clip(parameters, max_norm: float) -> float:
+    """Pre-step total grad norm; clips in place when ``max_norm > 0``.
+
+    Returns the PRE-clip norm either way so the grad_norm_* scalars logged
+    for tensorboard stay comparable whether clipping is enabled or not.
+    C-1 (docs/conditional_review.md): opt-in via ``train.grad_clip_norm``
+    (default 0 = disabled). MPS runs fp32 where grad explosions are rare,
+    so this is a safety valve rather than an always-on change.
+    """
+    if max_norm > 0:
+        return float(torch.nn.utils.clip_grad_norm_(parameters, max_norm))
+    return total_grad_norm(parameters)
+
+
 from time import sleep
 from time import time as ttime
 
@@ -639,6 +653,21 @@ def train_and_evaluate(
     # 数学的に等価（同一の勾配合計）なので品質への影響はない。
     accumulation_steps = max(1, getattr(hps.train, "accumulation_steps", 1))
 
+    # C-1 (conditional_review): opt-in grad clipping via train.grad_clip_norm.
+    # Default 0 keeps the legacy no-clip behavior.
+    grad_clip_norm = float(getattr(hps.train, "grad_clip_norm", 0.0) or 0.0)
+
+    # C-2 (conditional_review): opt-in linear LR warmup via the existing
+    # (previously unused) train.warmup_epochs field. The ramp is counted in
+    # ABSOLUTE batches ((epoch-1)*len(loader)+iter_idx) so resuming mid-run
+    # never re-warms — the field is documented as epochs, not steps.
+    warmup_steps = int(
+        max(0, getattr(hps.train, "warmup_epochs", 0) or 0) * len(train_loader)
+    )
+    # Scheduler-set LR for this epoch; warmup scales FROM these values.
+    _base_lr_g = [pg["lr"] for pg in optim_g.param_groups]
+    _base_lr_d = [pg["lr"] for pg in optim_d.param_groups]
+
     # Run steps
     epoch_recorder = EpochRecorder()
     grad_norm_d = grad_norm_g = 0.0  # accumulation 中に未定義になるのを防ぐ
@@ -685,6 +714,18 @@ def train_and_evaluate(
         # accumulation_steps バッチごとに optimizer.step() を実行するか判定。
         # iter_idx（連続）を使い、batch_idx（cache shuffle 後に非連続）に依存しない。
         is_update_step = (iter_idx + 1) % accumulation_steps == 0
+
+        # C-2 warmup: scale both optimizers' LR by the linear ramp while
+        # inside the warmup window. Outside it, param_groups keep the
+        # scheduler-maintained value untouched.
+        if warmup_steps:
+            _abs_idx = (epoch - 1) * len(train_loader) + iter_idx
+            if _abs_idx < warmup_steps:
+                _f = (_abs_idx + 1) / warmup_steps
+                for _pg, _b in zip(optim_g.param_groups, _base_lr_g):
+                    _pg["lr"] = _b * _f
+                for _pg, _b in zip(optim_d.param_groups, _base_lr_d):
+                    _pg["lr"] = _b * _f
 
         # Calculate
         with autocast(enabled=hps.train.fp16_run or _MPS_AMP):
@@ -733,7 +774,7 @@ def train_and_evaluate(
         scaler.scale(loss_disc / accumulation_steps).backward()
         if is_update_step:
             scaler.unscale_(optim_d)
-            grad_norm_d = total_grad_norm(net_d.parameters())
+            grad_norm_d = _grad_norm_or_clip(net_d.parameters(), grad_clip_norm)
             scaler.step(optim_d)
             optim_d.zero_grad()
 
@@ -749,7 +790,7 @@ def train_and_evaluate(
         scaler.scale(loss_gen_all / accumulation_steps).backward()
         if is_update_step:
             scaler.unscale_(optim_g)
-            grad_norm_g = total_grad_norm(net_g.parameters())
+            grad_norm_g = _grad_norm_or_clip(net_g.parameters(), grad_clip_norm)
             scaler.step(optim_g)
             scaler.update()
             optim_g.zero_grad()
@@ -847,11 +888,11 @@ def train_and_evaluate(
     # is_update_step が一度も True にならなかった場合も含む。
     if iter_idx > 0 and iter_idx % accumulation_steps != 0:
         scaler.unscale_(optim_d)
-        grad_norm_d = total_grad_norm(net_d.parameters())
+        grad_norm_d = _grad_norm_or_clip(net_d.parameters(), grad_clip_norm)
         scaler.step(optim_d)
         optim_d.zero_grad()
         scaler.unscale_(optim_g)
-        grad_norm_g = total_grad_norm(net_g.parameters())
+        grad_norm_g = _grad_norm_or_clip(net_g.parameters(), grad_clip_norm)
         scaler.step(optim_g)
         scaler.update()
         optim_g.zero_grad()

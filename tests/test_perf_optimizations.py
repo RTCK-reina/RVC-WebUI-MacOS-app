@@ -548,3 +548,126 @@ class TestAccumulationStepsEdgeCases:
         # 等価: loss合計 / accumulation_steps
         expected = sum(losses) / accumulation_steps
         assert abs(accumulated - expected) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# 8. C-1 grad_clip_norm — _grad_norm_or_clip のディスパッチと適用点
+# ---------------------------------------------------------------------------
+
+
+class TestGradClipNorm:
+    """train.py の _grad_norm_or_clip が条件付きで clip_grad_norm_ に
+    切り替わること、および step 前の全適用点で呼ばれることを検証。
+
+    train.py はモジュール先頭で get_hparams() (argparse) を要求するため
+    import 不可。ロジック等価なインライン実装 + ソース存在確認で担保する。
+    """
+
+    def _dispatch(self, params, max_norm, clip_fn, norm_fn):
+        """_grad_norm_or_clip と同一ロジック。"""
+        if max_norm > 0:
+            return float(clip_fn(params, max_norm))
+        return norm_fn(params)
+
+    def test_disabled_uses_total_grad_norm(self):
+        """grad_clip_norm=0 (デフォルト) では従来の total_grad_norm を使う。"""
+        clip = MagicMock()
+        norm = MagicMock(return_value=3.5)
+        assert self._dispatch(["p"], 0.0, clip, norm) == 3.5
+        clip.assert_not_called()
+        norm.assert_called_once_with(["p"])
+
+    def test_enabled_clips_and_returns_preclip_norm(self):
+        """grad_clip_norm>0 では clip_grad_norm_ を呼び、戻り値は clip 前
+        ノルム (ログ値が clip 有無で比較可能な契約)。"""
+        clip = MagicMock(return_value=7.25)
+        norm = MagicMock()
+        assert self._dispatch(["p"], 1.0, clip, norm) == 7.25
+        clip.assert_called_once_with(["p"], 1.0)
+        norm.assert_not_called()
+
+    def test_source_has_four_call_sites(self):
+        """2箇所の is_update_step + epoch末flush の計4箇所で呼ばれる。"""
+        source = Path(_repo_root, "infer/modules/train/train.py").read_text()
+        assert (
+            source.count("_grad_norm_or_clip(net_d.parameters(), grad_clip_norm)") == 2
+        )
+        assert (
+            source.count("_grad_norm_or_clip(net_g.parameters(), grad_clip_norm)") == 2
+        )
+        # 直接の total_grad_norm 呼び出しは残っていないこと
+        assert "total_grad_norm(net_" not in source
+
+    def test_getattr_default_disabled(self):
+        """hps.train に grad_clip_norm がなくてもデフォルト 0.0 で無効。"""
+        hps_train = MagicMock(spec=[])
+        result = float(getattr(hps_train, "grad_clip_norm", 0.0) or 0.0)
+        assert result == 0.0
+
+    def test_config_jsons_have_field(self):
+        """全 config JSON が grad_clip_norm フィールドを持つこと。"""
+        import json
+
+        for path in Path(_repo_root, "configs").glob("*/*.json"):
+            data = json.loads(path.read_text())
+            assert "grad_clip_norm" in data["train"], path
+
+
+# ---------------------------------------------------------------------------
+# 9. C-2 warmup_epochs — 絶対バッチ index の線形ランプ
+# ---------------------------------------------------------------------------
+
+
+class TestWarmupRamp:
+    """train.py の warmup ロジック (絶対バッチ idx の線形スケール) を検証。
+
+    実装: warmup_steps = warmup_epochs * len(train_loader)
+          _abs_idx = (epoch - 1) * len(train_loader) + iter_idx
+          factor = (_abs_idx + 1) / warmup_steps  (abs < warmup_steps の間のみ)
+    """
+
+    def _lr_at(self, base_lr, epoch, iter_idx, n_batches, warmup_epochs):
+        """1エポック内ループで観測される lr を train.py と同じ式で再現。"""
+        warmup_steps = int(warmup_epochs * n_batches)
+        if warmup_steps == 0:
+            return base_lr
+        abs_idx = (epoch - 1) * n_batches + iter_idx
+        if abs_idx < warmup_steps:
+            return base_lr * (abs_idx + 1) / warmup_steps
+        return base_lr
+
+    def test_zero_warmup_epochs_noop(self):
+        """warmup_epochs=0 (全 config のデフォルト) では lr 不変。"""
+        for epoch in (1, 2, 10):
+            for it in (0, 5, 99):
+                assert self._lr_at(1e-4, epoch, it, 100, 0) == 1e-4
+
+    def test_linear_ramp_first_epoch(self):
+        """epoch1 で lr が base/warmup_steps から線形に立ち上がる。"""
+        base = 1e-4
+        lrs = [self._lr_at(base, 1, i, 100, 2) for i in range(100)]
+        # warmup_steps = 200: epoch1 の最後のバッチで factor = 0.5
+        assert lrs[0] == base / 200
+        assert abs(lrs[99] - base * 0.5) < 1e-9
+        # 単調増加
+        assert all(b >= a for a, b in zip(lrs, lrs[1:]))
+
+    def test_ramp_completes_across_epochs(self):
+        """warmup が複数エポックにまたがっても継続し、終了後は base に戻る。"""
+        base = 1e-4
+        # warmup_steps = 200: epoch2 の iter_idx=99 で abs=199 → factor=1.0
+        assert self._lr_at(base, 2, 99, 100, 2) == base
+        # epoch3 以降は一切触らない
+        assert self._lr_at(base, 3, 0, 100, 2) == base
+
+    def test_resume_never_rewarms(self):
+        """resume (epoch >> warmup) では warmup が発動しない。"""
+        base = 1e-4
+        for it in range(0, 100, 10):
+            assert self._lr_at(base, 10, it, 100, 2) == base
+
+    def test_source_uses_absolute_index(self):
+        """実装がエポックまたぎの絶対 index を使っていることのソース確認。"""
+        source = Path(_repo_root, "infer/modules/train/train.py").read_text()
+        assert "(epoch - 1) * len(train_loader) + iter_idx" in source
+        assert "warmup_epochs" in source
