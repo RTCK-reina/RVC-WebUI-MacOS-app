@@ -975,6 +975,25 @@ def _write_filelist(
     (exp_dir / "filelist.txt").write_text("\n".join(opt))
 
 
+def _index_kmeans_clusters(n_rows: int) -> Optional[int]:
+    """Cluster count for the index-shrinking KMeans, scaled to dataset size.
+
+    C-5 (docs/conditional_review.md): the legacy code ran a fixed
+    n_clusters=10000 KMeans gated behind ``n_rows > 2e5``, so mid-size
+    datasets kept every raw feature vector in the index (hundreds of MB)
+    while only the very largest were compressed — always to 10k centers
+    regardless of actual size.
+
+    Scaling by ``n_rows // 20`` keeps the index ~20x smaller than the raw
+    feature matrix at every size. Returns None below ~5k rows, where even
+    the 256-cluster floor is more quantization than the data justifies;
+    capped at the legacy 10000 for very large datasets.
+    """
+    if n_rows <= 5120:
+        return None
+    return max(256, min(10000, n_rows // 20))
+
+
 def rpc_train_index(params: dict, ctx):
     """Build a FAISS index from the extracted features."""
     config = ctx["config"]
@@ -1033,13 +1052,14 @@ def rpc_train_index(params: dict, ctx):
         # copy of the feature matrix (GB-scale on long datasets).
         del npys
         np.random.shuffle(big_npy)
-        if big_npy.shape[0] > 2e5:
-            emit_progress(task_id, 25, "kmeans to 10k centers", "index")
+        n_clusters = _index_kmeans_clusters(big_npy.shape[0])
+        if n_clusters is not None:
+            emit_progress(task_id, 25, f"kmeans to {n_clusters} centers", "index")
             if r := _check_cancel():
                 return r
             big_npy = (
                 MiniBatchKMeans(
-                    n_clusters=10000,
+                    n_clusters=n_clusters,
                     verbose=False,
                     batch_size=256 * config.n_cpu,
                     compute_labels=False,
