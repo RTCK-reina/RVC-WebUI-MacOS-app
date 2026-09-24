@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import hashlib
+import os
 import pathlib
 from scipy.fft import fft
 from pybase16384 import encode_to_string, decode_from_string
@@ -93,10 +94,18 @@ def wave_hash(time_field):
     return encode_to_string(hash.tobytes())
 
 
+# Hashing always runs on CPUConfig; cache the (CPU) HuBERT so hashing N models
+# in the model-management UI loads hubert_base.pt once instead of N times.
+@singleton_variable
+def _hash_hubert():
+    config = CPUConfig()
+    return load_hubert(config.device, config.is_half)
+
+
 def model_hash(config, tgt_sr, net_g, if_f0, version):
     pipeline = Pipeline(tgt_sr, config)
     audio = original_audio()
-    hbt = load_hubert(config.device, config.is_half)
+    hbt = _hash_hubert()
     audio_opt = pipeline.pipeline(
         hbt,
         net_g,
@@ -115,7 +124,6 @@ def model_hash(config, tgt_sr, net_g, if_f0, version):
         version,
         0.33,
     )
-    del hbt
     opt_len = len(audio_opt)
     diff = 48000 - opt_len
     if diff > 0:
@@ -150,10 +158,26 @@ def model_hash_ckpt(cpt):
     return h
 
 
+# (path, mtime) -> hash. A model file's hash is deterministic (seeded), so a
+# re-hash of an unchanged .pth (model list refreshes etc.) is pure waste: it
+# used to run a full 3s CPU inference per call.
+_model_hash_cache = {}
+
+
 def model_hash_from(path):
+    try:
+        key = (str(path), os.path.getmtime(path))
+    except OSError:
+        key = None
+    if key is not None and key in _model_hash_cache:
+        return _model_hash_cache[key]
     cpt = load_weights(path, map_location="cpu")
     h = model_hash_ckpt(cpt)
     del cpt
+    if key is not None:
+        if len(_model_hash_cache) > 256:
+            _model_hash_cache.clear()
+        _model_hash_cache[key] = h
     return h
 
 

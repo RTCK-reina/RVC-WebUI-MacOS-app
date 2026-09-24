@@ -80,6 +80,10 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path)
         state_dict = model.module.state_dict()
     else:
         state_dict = model.state_dict()
+    # Atomic write: serialize to a sibling temp file and rename. A SIGKILL
+    # (hard cancel / crash / power loss) mid-save would otherwise leave a
+    # truncated checkpoint that breaks the next resume.
+    tmp_path = str(checkpoint_path) + ".tmp"
     torch.save(
         {
             "model": state_dict,
@@ -87,8 +91,9 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path)
             "optimizer": optimizer.state_dict(),
             "learning_rate": learning_rate,
         },
-        checkpoint_path,
+        tmp_path,
     )
+    os.replace(tmp_path, checkpoint_path)
 
 
 def summarize(

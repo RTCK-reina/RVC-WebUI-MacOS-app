@@ -107,6 +107,11 @@ final class PythonBridge: ObservableObject {
     @Published var indices: [String] = []
     @Published var uvr5Models: [String] = []
 
+    /// Serial queue for stdin writes — see the write site in call(): keeps a
+    /// wedged backend from freezing the MainActor while preserving ordering.
+    private static let stdinWriteQueue = DispatchQueue(
+        label: "com.rtck.rvcapp.stdin-write")
+
     // MARK: - Process plumbing
 
     /// PID cached for nonisolated killSync() — updated on start/shutdown.
@@ -543,13 +548,25 @@ final class PythonBridge: ObservableObject {
                     }
                     return
                 }
-                do {
-                    try writeHandle.write(contentsOf: payload)
-                } catch {
-                    pendingRequests.removeValue(forKey: id)
-                    cont.resume(
-                        throwing: PythonBridgeError.writeFailed(error.localizedDescription))
-                    return
+                // Write on a background serial queue. A synchronous write from
+                // the MainActor blocks the ENTIRE UI if the backend stops
+                // draining stdin (64KB pipe buffer full) — precisely the
+                // wedge scenario where the user needs a live UI to trigger
+                // cancel/hardRestart. The serial queue preserves write order.
+                Self.stdinWriteQueue.async {
+                    do {
+                        try writeHandle.write(contentsOf: payload)
+                    } catch {
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            self.pendingTimeouts.removeValue(forKey: id)?.cancel()
+                            guard let pending = self.pendingRequests.removeValue(forKey: id)
+                            else { return }
+                            pending.resume(
+                                throwing: PythonBridgeError.writeFailed(
+                                    error.localizedDescription))
+                        }
+                    }
                 }
 
                 let nanos = UInt64(max(0, timeout) * 1_000_000_000)
@@ -638,7 +655,15 @@ final class PythonBridge: ObservableObject {
             self.isAlive = true
             self.isReady = true
         case "resource_stats":
-            self.resourceStats = ResourceStats(fromParams: params)
+            // Equality-gated assignment: this arrives at 1Hz and every
+            // @Published write invalidates ALL observing views. Skip the
+            // publish when nothing but the timestamp changed.
+            let incoming = ResourceStats(fromParams: params)
+            var comparable = incoming
+            comparable.timestamp = self.resourceStats.timestamp
+            if comparable != self.resourceStats {
+                self.resourceStats = incoming
+            }
             self.backendStatus = self.resourceStats.status
         case "status":
             if let s = params["status"]?.stringValue {

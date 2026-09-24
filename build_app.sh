@@ -63,6 +63,15 @@ if [[ $SKIP_CONDA -eq 0 ]]; then
     rm "${BUILD_DIR}/rvc_env.tar.gz"
 fi
 
+# Repair zero-fill Mach-O sections that macOS 26/27 dyld refuses to load
+# (gfortran-built extensions like scipy PROPACK ship a nonzero offset on
+# __thread_bss; newer dyld hard-fails the dlopen). Idempotent, so run it on
+# every build regardless of --skip-conda.
+if [[ -d "${PYTHON_BUNDLE}" ]]; then
+    echo "==> Repairing zero-fill Mach-O sections (macOS 26/27 dyld compat)"
+    python3 "${ROOT_DIR}/tools/fix_macho_zerofill.py" "${PYTHON_BUNDLE}" | tail -1
+fi
+
 # ---------------------------------------------------------------------------
 # Step 2: Generate Xcode project and build the Swift app.
 # ---------------------------------------------------------------------------
@@ -192,6 +201,35 @@ rsync -a --delete "${ROOT_DIR}/assets" "${RES_DIR}/rvc_backend/"
 rsync -a --delete "${PYTHON_BUNDLE}/" "${RES_DIR}/python/"
 
 # ---------------------------------------------------------------------------
+# Step 3.5: Prune the bundled Python env (RVC_PRUNE=0 to disable).
+# conda-pack ships everything: C/C++ headers, cmake files, static libs, and
+# package test suites — none of which are needed at runtime. Pruning the COPY
+# inside Resources/ (not build/python_env) keeps the source env intact for
+# incremental --skip-conda rebuilds. Deliberately NOT pruned: torch/bin
+# (torch_shm_manager), tkinter, __pycache__ (first-launch speed).
+# ---------------------------------------------------------------------------
+if [[ "${RVC_PRUNE:-1}" -eq 1 ]]; then
+    echo "==> Pruning bundled python env"
+    PY_DIR="${RES_DIR}/python"
+    du -sh "${PY_DIR}" | awk '{print "    before: " $1}' || true
+    # Package test suites (largest offenders: numpy/scipy/sklearn/torch).
+    find "${PY_DIR}/lib" -type d \( -name tests -o -name test \) \
+        -path "*/site-packages/*" -prune -exec rm -rf {} + 2>/dev/null || true
+    # C/C++ headers (only needed to BUILD extensions, never to run them).
+    rm -rf "${PY_DIR}/include" 2>/dev/null || true
+    find "${PY_DIR}/lib" -type d -name include -path "*torch*" \
+        -prune -exec rm -rf {} + 2>/dev/null || true
+    # Static libraries and cmake/pkgconfig build metadata.
+    find "${PY_DIR}" -name "*.a" -type f -delete 2>/dev/null || true
+    find "${PY_DIR}/lib" -type d \( -name cmake -o -name pkgconfig \) \
+        -prune -exec rm -rf {} + 2>/dev/null || true
+    # Docs / manpages / conda bookkeeping.
+    rm -rf "${PY_DIR}/share/man" "${PY_DIR}/share/doc" "${PY_DIR}/conda-meta" \
+        2>/dev/null || true
+    du -sh "${PY_DIR}" | awk '{print "    after:  " $1}' || true
+fi
+
+# ---------------------------------------------------------------------------
 # Step 4: Code sign every .so / .dylib, then the app itself.
 # ---------------------------------------------------------------------------
 if [[ $SKIP_SIGN -eq 0 ]]; then
@@ -201,9 +239,25 @@ if [[ $SKIP_SIGN -eq 0 ]]; then
         codesign --force --sign "${IDENTITY}" \
             --options runtime --timestamp=none "${lib}"
     done < <(find "${RES_DIR}/python" \( -name "*.so" -o -name "*.dylib" \) -print0)
+    # Standalone Mach-O executables inside Resources (python3 itself,
+    # torch_shm_manager, bundled CLI tools). `codesign --deep` does NOT
+    # reliably cover arbitrary executables under Resources/, which breaks
+    # notarization for Developer ID distribution.
+    echo "==> Code signing bundled executables"
+    while IFS= read -r -d '' exe; do
+        if file -b "${exe}" 2>/dev/null | grep -q "Mach-O"; then
+            codesign --force --sign "${IDENTITY}" \
+                --options runtime --timestamp=none "${exe}" 2>/dev/null || true
+        fi
+    done < <(find "${RES_DIR}/python/bin" "${RES_DIR}/python/lib" \
+        -type f -perm -u+x -not -name "*.so" -not -name "*.dylib" \
+        -not -name "*.py" -print0 2>/dev/null)
     codesign --force --deep --sign "${IDENTITY}" \
         --entitlements "${ROOT_DIR}/RVCApp/RVCApp/RVCApp.entitlements" \
         --options runtime --timestamp=none "${APP_PATH}"
+    # Fail the build here (not at first launch) if the seal is broken.
+    codesign --verify --deep --strict "${APP_PATH}" \
+        && echo "==> codesign verify: OK"
 fi
 
 echo "==> Bundle ready: ${APP_PATH}"

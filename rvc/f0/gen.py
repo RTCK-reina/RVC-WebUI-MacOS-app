@@ -41,6 +41,24 @@ def post_process(
     return f0_coarse, f0  # 1-0
 
 
+# Process-wide RMVPE cache. The RMVPE weights (~180MB) are model-independent,
+# but each Pipeline/RVC instance owns its own Generator, so without this cache
+# every voice-model switch used to re-read rmvpe.pt from disk and re-upload it
+# to the device on the next F0 request.
+_RMVPE_CACHE = {}
+
+
+def _get_rmvpe(model_path: str, is_half: bool, device) -> "object":
+    key = (str(model_path), bool(is_half), str(device))
+    predictor = _RMVPE_CACHE.get(key)
+    if predictor is None:
+        from .rmvpe import RMVPE
+
+        predictor = RMVPE(str(model_path), is_half=is_half, device=device)
+        _RMVPE_CACHE[key] = predictor
+    return predictor
+
+
 class Generator(object):
     def __init__(
         self,
@@ -67,7 +85,11 @@ class Generator(object):
         filter_radius: Optional[Union[int, float]],
         manual_f0: Optional[Union[np.ndarray, list]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        if torch.is_tensor(x):
+        # RMVPE accepts a torch tensor directly (compute_f0 handles both), so
+        # keep device tensors on-device for that path instead of forcing a
+        # GPU->CPU->GPU round-trip per call (three transfers per realtime
+        # block). The other extractors are numpy-based.
+        if torch.is_tensor(x) and f0_method != "rmvpe":
             x = x.cpu().numpy()
         f0_min = 50
         f0_max = 1100
@@ -103,13 +125,10 @@ class Generator(object):
             f0 = self.crepe.compute_f0(x, p_len=p_len)
         elif f0_method == "rmvpe":
             if not hasattr(self, "rmvpe"):
-                from .rmvpe import RMVPE
-
-                self.rmvpe = RMVPE(
-                    str(self.rmvpe_root / "rmvpe.pt"),
+                self.rmvpe = _get_rmvpe(
+                    self.rmvpe_root / "rmvpe.pt",
                     is_half=self.is_half,
                     device=self.device,
-                    # use_jit=self.config.use_jit,
                 )
             f0 = self.rmvpe.compute_f0(x, p_len=p_len, filter_radius=0.03)
             if "privateuseone" in str(self.device):  # clean ortruntime memory

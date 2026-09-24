@@ -21,6 +21,28 @@ from rvc.synthesizer import load_synthesizer
 
 logger = logging.getLogger(__name__)
 
+# Process-wide HuBERT cache. The realtime RVC object is re-created on every
+# realtime_start / settings change, and hubert_base.pt (~180MB) was re-read
+# from disk and re-uploaded to the device each time. Keyed by
+# (path, device, is_half) so distinct configurations coexist safely.
+_HUBERT_CACHE = {}
+
+
+def _load_hubert_cached(hubert_path: str, device: str, is_half: bool):
+    key = (str(hubert_path), str(device), bool(is_half))
+    model = _HUBERT_CACHE.get(key)
+    if model is None:
+        with legacy_load():
+            models, _, _ = fairseq.checkpoint_utils.load_model_ensemble_and_task(
+                [hubert_path],
+                suffix="",
+            )
+        model = models[0].to(device)
+        model = model.half() if is_half else model.float()
+        model.eval()
+        _HUBERT_CACHE[key] = model
+    return model
+
 
 class RVC:
     def __init__(
@@ -68,12 +90,12 @@ class RVC:
         self.big_npy = None
         if index_path and os.path.exists(index_path):
             try:
-                self.index = faiss.read_index(index_path)
-                self.big_npy = self.index.reconstruct_n(0, self.index.ntotal)
+                self.index, self.big_npy = self._prepare_index(index_path)
             except Exception:
                 logger.exception("failed to load faiss index: %s", index_path)
                 self.index = None
                 self.big_npy = None
+        self._index_error_logged = False
 
         self.pth_path = pth_path
         self.index_path = index_path
@@ -100,19 +122,7 @@ class RVC:
             )
         else:
             _hubert = "assets/hubert/hubert_base.pt"
-        with legacy_load():
-            models, _, _ = fairseq.checkpoint_utils.load_model_ensemble_and_task(
-                [_hubert],
-                suffix="",
-            )
-        hubert_model = models[0]
-        hubert_model = hubert_model.to(self.device)
-        if self.is_half:
-            hubert_model = hubert_model.half()
-        else:
-            hubert_model = hubert_model.float()
-        hubert_model.eval()
-        self.hubert = hubert_model
+        self.hubert = _load_hubert_cached(_hubert, self.device, self.is_half)
 
         self.net_g: Optional[nn.Module] = None
 
@@ -166,13 +176,35 @@ class RVC:
             and os.path.exists(self.index_path)
         ):
             try:
-                self.index = faiss.read_index(self.index_path)
-                self.big_npy = self.index.reconstruct_n(0, self.index.ntotal)
+                self.index, self.big_npy = self._prepare_index(self.index_path)
             except Exception:
                 logger.exception("failed to load faiss index: %s", self.index_path)
                 self.index = None
                 self.big_npy = None
         self.index_rate = new_index_rate
+
+    @staticmethod
+    def _prepare_index(index_path: str):
+        """Read a faiss index, preferring on-demand row reconstruction.
+
+        Returns (index, big_npy) where big_npy is None when the installed
+        faiss supports reconstruct_batch — in that mode only the k=8 search
+        hits are reconstructed per block instead of keeping the whole
+        (potentially hundreds of MB) feature matrix resident in RAM.
+        """
+        index = faiss.read_index(index_path)
+        try:
+            if hasattr(index, "make_direct_map"):
+                index.make_direct_map()
+            if index.ntotal > 0:
+                index.reconstruct_batch(np.zeros(1, dtype=np.int64))
+            return index, None
+        except Exception:
+            logger.info(
+                "faiss reconstruct_batch unavailable; falling back to full "
+                "in-RAM feature matrix"
+            )
+            return index, index.reconstruct_n(0, index.ntotal)
 
     def infer(
         self,
@@ -192,11 +224,13 @@ class RVC:
             if feats.dim() == 2:  # double channels
                 feats = feats.mean(-1)
             feats = feats.view(1, -1)
-            padding_mask = torch.BoolTensor(feats.shape).to(self.device).fill_(False)
 
             inputs = {
+                # None is equivalent to an all-False padding mask (the mask
+                # branch in HuBERT is skipped) and avoids a CPU alloc +
+                # host->device copy + index_put on every realtime block.
                 "source": feats,
-                "padding_mask": padding_mask,
+                "padding_mask": None,
                 "output_layer": 9 if self.version == "v1" else 12,
             }
             logits = self.hubert.extract_features(**inputs)
@@ -208,11 +242,7 @@ class RVC:
                 feats0 = feats.clone()
 
         try:
-            if (
-                self.index is not None
-                and self.big_npy is not None
-                and self.index_rate > 0
-            ):
+            if self.index is not None and self.index_rate > 0:
                 npy = feats[0][skip_head // 2 :].cpu().numpy()
                 if self.is_half:
                     npy = npy.astype("float32")
@@ -223,9 +253,13 @@ class RVC:
                     score = np.maximum(score, 1e-10)
                     weight = np.square(1 / score)
                     weight /= weight.sum(axis=1, keepdims=True)
-                    npy = np.sum(
-                        self.big_npy[ix] * np.expand_dims(weight, axis=2), axis=1
-                    )
+                    if self.big_npy is None:
+                        vecs = self.index.reconstruct_batch(
+                            ix.ravel().astype(np.int64)
+                        ).reshape(ix.shape[0], ix.shape[1], -1)
+                    else:
+                        vecs = self.big_npy[ix]
+                    npy = np.sum(vecs * np.expand_dims(weight, axis=2), axis=1)
                     if self.is_half:
                         npy = npy.astype("float16")
                     feats[0][skip_head // 2 :] = (
@@ -233,8 +267,17 @@ class RVC:
                         * self.index_rate
                         + (1 - self.index_rate) * feats[0][skip_head // 2 :]
                     )
-        except:
-            pass
+        except Exception:
+            # Do not silently swallow index failures: a v1 index applied to a
+            # v2 model (dimension mismatch) etc. would otherwise degrade audio
+            # quality with no visible signal. Log once per session.
+            if not self._index_error_logged:
+                self._index_error_logged = True
+                logger.warning(
+                    "realtime index search failed; continuing WITHOUT index "
+                    "(index_rate is effectively 0)",
+                    exc_info=True,
+                )
 
         p_len = input_wav.shape[0] // self.window
         factor = pow(2, self.formant_shift / 12)
@@ -299,11 +342,28 @@ class RVC:
         upp_res = int(np.floor(factor * self.tgt_sr // 100))
         if upp_res != self.tgt_sr // 100:
             if upp_res not in self.resample_kernel:
-                self.resample_kernel[upp_res] = Resample(
-                    orig_freq=upp_res,
-                    new_freq=self.tgt_sr // 100,
-                    dtype=torch.float32,
-                ).to(self.device)
+                # "kaiser_best"-grade kernel: the default sinc interpolation
+                # (lowpass_filter_width=6) has shallow stopband attenuation
+                # and leaves audible aliasing when formant shift is active.
+                # The kernel is built once per upp_res and cached, so the
+                # higher quality costs nothing per block.
+                try:
+                    self.resample_kernel[upp_res] = Resample(
+                        orig_freq=upp_res,
+                        new_freq=self.tgt_sr // 100,
+                        lowpass_filter_width=64,
+                        rolloff=0.9475937167399596,
+                        resampling_method="sinc_interp_kaiser",
+                        beta=14.769656459379492,
+                        dtype=torch.float32,
+                    ).to(self.device)
+                except (TypeError, ValueError):
+                    # Older torchaudio without sinc_interp_kaiser naming.
+                    self.resample_kernel[upp_res] = Resample(
+                        orig_freq=upp_res,
+                        new_freq=self.tgt_sr // 100,
+                        dtype=torch.float32,
+                    ).to(self.device)
             infered_audio = self.resample_kernel[upp_res](
                 infered_audio[:, : return_length * upp_res]
             )

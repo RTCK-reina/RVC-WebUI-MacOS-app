@@ -118,7 +118,16 @@ def _populate_env_paths(base_dir: Path, user_dir: Path) -> None:
     os.environ["input_root"] = str(user_dir / "input")
     os.environ["TEMP"] = str(user_dir / "temp")
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+    # Bound the MPS allocator instead of disabling the limit ("0.0").
+    # With the limit disabled, a too-large workload silently pushes macOS
+    # into swap and freezes the whole machine instead of raising a
+    # catchable OOM error. 1.7 is PyTorch's own default high-watermark.
+    # Override with RVC_MPS_WATERMARK_RATIO (set "0.0" to restore the old
+    # unbounded behavior).
+    os.environ.setdefault(
+        "PYTORCH_MPS_HIGH_WATERMARK_RATIO",
+        os.environ.get("RVC_MPS_WATERMARK_RATIO", "1.7"),
+    )
     # macOS app launches and sandboxed subprocesses may not have writable
     # user cache locations. librosa imports numba-cached functions during
     # training; without an explicit cache dir it can abort with
@@ -303,11 +312,21 @@ class Config:
             target = inuse_root / config_file
             if not target.exists():
                 continue
-            with open(target, "r") as f:
-                strr = f.read().replace("true", "false")
-            with open(target, "w") as f:
-                f.write(strr)
-            logger.info("overwrite " + config_file)
+            # Targeted JSON edit. The previous implementation did a blanket
+            # text replace of "true" -> "false", which would silently flip any
+            # other boolean (or the substring "true" anywhere) in a
+            # user-editable config file.
+            try:
+                with open(target, "r") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("could not parse %s (%s); leaving untouched", target, e)
+                continue
+            if data.get("train", {}).get("fp16_run") is not False:
+                data.setdefault("train", {})["fp16_run"] = False
+                with open(target, "w") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                logger.info("overwrite " + config_file)
         self.preprocess_per = 3.0
         logger.info("overwrite preprocess_per to %.1f" % (self.preprocess_per))
 
@@ -345,8 +364,18 @@ class Config:
         elif self.mps_available:
             logger.info("No supported Nvidia GPU found")
             self.device = self.instead = "mps"
-            self.is_half = False
-            self.use_fp32_config()
+            if os.environ.get("RVC_MPS_FP16", "0") == "1":
+                # Experimental: Apple GPUs have ~2x fp16 throughput and the
+                # inference path (HuBERT / RMVPE / HiFiGAN-NSF) is
+                # bandwidth-bound. Off by default until validated per-machine;
+                # enable with RVC_MPS_FP16=1.
+                logger.info(
+                    "RVC_MPS_FP16=1 - enabling half precision on MPS (experimental)"
+                )
+                self.is_half = True
+            else:
+                self.is_half = False
+                self.use_fp32_config()
         else:
             logger.info("No supported Nvidia GPU found")
             self.device = self.instead = "cpu"

@@ -93,18 +93,44 @@ class Predictor:
 
         logger.info(ort.get_available_providers())
         self.args = args
+        # Run the STFT/iSTFT stages on the requested torch device (MPS on
+        # Apple Silicon) instead of pinning them to CPU. If the device is
+        # unusable we quietly fall back to CPU.
+        req_device = getattr(args, "device", None) or "cpu"
+        try:
+            torch.zeros(1).to(req_device)
+            self.stft_device = torch.device(str(req_device))
+        except Exception:
+            self.stft_device = cpu
         self.model_ = get_models(
-            device=cpu, dim_f=args.dim_f, dim_t=args.dim_t, n_fft=args.n_fft
+            device=self.stft_device,
+            dim_f=args.dim_f,
+            dim_t=args.dim_t,
+            n_fft=args.n_fft,
         )
-        self.model = ort.InferenceSession(
-            os.path.join(args.onnx, self.model_.target_name + ".onnx"),
-            providers=[
-                "CUDAExecutionProvider",
-                "DmlExecutionProvider",
-                "CPUExecutionProvider",
-            ],
-        )
-        logger.info("ONNX load done")
+        onnx_path = os.path.join(args.onnx, self.model_.target_name + ".onnx")
+        # CoreML first on macOS (ANE/GPU offload); unavailable providers are
+        # skipped by onnxruntime, and a hard failure falls back to CPU-only.
+        try:
+            self.model = ort.InferenceSession(
+                onnx_path,
+                providers=[
+                    "CoreMLExecutionProvider",
+                    "CUDAExecutionProvider",
+                    "DmlExecutionProvider",
+                    "CPUExecutionProvider",
+                ],
+            )
+        except Exception:
+            logger.warning(
+                "onnxruntime session with accelerated providers failed; "
+                "retrying CPU-only",
+                exc_info=True,
+            )
+            self.model = ort.InferenceSession(
+                onnx_path, providers=["CPUExecutionProvider"]
+            )
+        logger.info("ONNX providers in use: %s", self.model.get_providers())
 
     def demix(self, mix):
         samples = mix.shape[-1]
@@ -161,24 +187,32 @@ class Predictor:
                 waves = np.array(mix_p[:, i : i + model.chunk_size])
                 mix_waves.append(waves)
                 i += gen_size
-            mix_waves = torch.tensor(mix_waves, dtype=torch.float32).to(cpu)
+            mix_waves = torch.tensor(np.array(mix_waves), dtype=torch.float32).to(
+                self.stft_device
+            )
             with torch.no_grad():
                 _ort = self.model
                 spek = model.stft(mix_waves)
+                spek_np = spek.cpu().numpy()
                 if self.args.denoise:
                     spec_pred = (
-                        -_ort.run(None, {"input": -spek.cpu().numpy()})[0] * 0.5
-                        + _ort.run(None, {"input": spek.cpu().numpy()})[0] * 0.5
+                        -_ort.run(None, {"input": -spek_np})[0] * 0.5
+                        + _ort.run(None, {"input": spek_np})[0] * 0.5
                     )
-                    tar_waves = model.istft(torch.tensor(spec_pred))
+                    tar_waves = model.istft(
+                        torch.tensor(spec_pred).to(self.stft_device)
+                    )
                 else:
                     tar_waves = model.istft(
-                        torch.tensor(_ort.run(None, {"input": spek.cpu().numpy()})[0])
+                        torch.tensor(_ort.run(None, {"input": spek_np})[0]).to(
+                            self.stft_device
+                        )
                     )
                 tar_signal = (
                     tar_waves[:, :, trim:-trim]
                     .transpose(0, 1)
                     .reshape(2, -1)
+                    .cpu()
                     .numpy()[:, :-pad]
                 )
 
@@ -233,8 +267,11 @@ class MDXNetDereverb:
         self.dim_f = 3072
         self.n_fft = 6144
         self.denoise = True
-        self.pred = Predictor(self)
+        # device must be set BEFORE Predictor(self): Predictor reads
+        # args.device to place the STFT stages (previously it was assigned
+        # after construction and silently ignored).
         self.device = device
+        self.pred = Predictor(self)
 
     def _path_audio_(self, input, vocal_root, others_root, format):
         self.pred.prediction(input, vocal_root, others_root, format)

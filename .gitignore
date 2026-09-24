@@ -26,3 +26,6 @@ BUILD_VERIFICATION_REPORT.md
 # Local test audio (user-supplied songs for pipeline verification — not source)
 /voicesample/
 .remember/
+
+# Cleanup staging (Claude session — 中身確認後にユーザーが削除する)
+/_to_delete/

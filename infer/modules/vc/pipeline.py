@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from scipy import signal
 
-from infer.lib.device import empty_device_cache
+from infer.lib.device import empty_device_cache_if_needed
 from rvc.f0 import Generator
 
 now_dir = os.getcwd()
@@ -110,30 +110,26 @@ class Pipeline(object):
             feats = feats.mean(-1)
         assert feats.dim() == 1, feats.dim()
         feats = feats.view(1, -1)
-        padding_mask = torch.BoolTensor(feats.shape).to(self.device).fill_(False)
 
         inputs = {
+            # padding_mask=None is mathematically equivalent to an all-False
+            # mask (see rvc/hubert.py: the mask branch is skipped entirely)
+            # and avoids allocating a CPU tensor + host->device copy plus a
+            # pointless index_put inside HuBERT on every chunk.
             "source": feats.to(self.device),
-            "padding_mask": padding_mask,
+            "padding_mask": None,
             "output_layer": 9 if version == "v1" else 12,
         }
         t0 = time()
-        with torch.no_grad():
+        with torch.inference_mode():
             logits = model.extract_features(**inputs)
             feats = model.final_proj(logits[0]) if version == "v1" else logits[0]
         if protect < 0.5 and pitch is not None and pitchf is not None:
             feats0 = feats.clone()
-        if (
-            not isinstance(index, type(None))
-            and not isinstance(big_npy, type(None))
-            and index_rate != 0
-        ):
+        if index is not None and index_rate != 0:
             npy = feats[0].cpu().numpy()
             if self.is_half:
                 npy = npy.astype("float32")
-
-            # _, I = index.search(npy, 1)
-            # npy = big_npy[I.squeeze()]
 
             try:
                 score, ix = index.search(npy, k=8)
@@ -146,7 +142,15 @@ class Pipeline(object):
             score = np.maximum(score, 1e-10)
             weight = np.square(1 / score)
             weight /= weight.sum(axis=1, keepdims=True)
-            npy = np.sum(big_npy[ix] * np.expand_dims(weight, axis=2), axis=1)
+            if big_npy is None:
+                # On-demand reconstruction: only the k=8 hit rows are pulled
+                # from the index instead of keeping the whole feature matrix
+                # (hundreds of MB for large v2 indices) resident in RAM.
+                vecs = index.reconstruct_batch(ix.ravel().astype(np.int64))
+                vecs = vecs.reshape(ix.shape[0], ix.shape[1], -1)
+            else:
+                vecs = big_npy[ix]
+            npy = np.sum(vecs * np.expand_dims(weight, axis=2), axis=1)
 
             if self.is_half:
                 npy = npy.astype("float16")
@@ -176,7 +180,7 @@ class Pipeline(object):
             feats = feats * pitchff + feats0 * (1 - pitchff)
             feats = feats.to(feats0.dtype)
         p_len = torch.tensor([p_len], device=self.device).long()
-        with torch.no_grad():
+        with torch.inference_mode():
             if self.onnx_net_g is not None:
                 # ONNX 推論パス（CoreML EP で ANE オフロード可能）
                 # OnnxSynthesizer.infer() は CPU Tensor を受け取り、
@@ -208,7 +212,7 @@ class Pipeline(object):
                     .float()
                     .numpy()
                 )
-        del feats, p_len, padding_mask
+        del feats, p_len
         t2 = time()
         times[0] += t1 - t0
         times[2] += t2 - t1
@@ -250,7 +254,22 @@ class Pipeline(object):
                     index, big_npy = self._index_cache
                 else:
                     index = faiss.read_index(file_index)
-                    big_npy = index.reconstruct_n(0, index.ntotal)
+                    # Prefer on-demand row reconstruction (big_npy=None) so the
+                    # full feature matrix never has to live in RAM. Falls back
+                    # to the legacy full reconstruct_n when the installed faiss
+                    # lacks make_direct_map/reconstruct_batch support.
+                    big_npy = None
+                    try:
+                        if hasattr(index, "make_direct_map"):
+                            index.make_direct_map()
+                        if index.ntotal > 0:
+                            index.reconstruct_batch(np.zeros(1, dtype=np.int64))
+                    except Exception:
+                        logger.info(
+                            "faiss reconstruct_batch unavailable; falling back to "
+                            "full in-RAM feature matrix"
+                        )
+                        big_npy = index.reconstruct_n(0, index.ntotal)
                     if cache_key is not None:
                         self._index_cache_key = cache_key
                         self._index_cache = (index, big_npy)
@@ -263,9 +282,14 @@ class Pipeline(object):
         audio_pad = np.pad(audio, (self.window // 2, self.window // 2), mode="reflect")
         opt_ts = []
         if audio_pad.shape[0] > self.t_max:
-            audio_sum = np.zeros_like(audio)
-            for i in range(self.window):
-                audio_sum += np.abs(audio_pad[i : i - self.window])
+            # Moving sum of |audio| over `window` samples via cumsum: O(N)
+            # instead of the previous O(window * N) Python loop (160 full
+            # array passes; ~seconds of pure numpy work on long files).
+            # float64 accumulator keeps the running sum numerically stable.
+            csum = np.concatenate(
+                ([0.0], np.cumsum(np.abs(audio_pad), dtype=np.float64))
+            )
+            audio_sum = (csum[self.window :] - csum[: -self.window])[: audio.shape[0]]
             for t in range(self.t_center, audio.shape[0], self.t_center):
                 opt_ts.append(
                     t
@@ -401,5 +425,8 @@ class Pipeline(object):
             max_int16 /= audio_max
         np.multiply(audio_opt, max_int16, audio_opt)
         del pitch, pitchf, sid
-        empty_device_cache()
+        # Only flush the MPS allocator pool under real memory pressure;
+        # unconditional empty_cache() forces every buffer to be re-allocated
+        # on the next file during batch inference.
+        empty_device_cache_if_needed()
         return audio_opt

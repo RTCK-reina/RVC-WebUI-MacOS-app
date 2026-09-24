@@ -134,37 +134,72 @@ def uvr(
             # TEMP and leave the original untouched.
             return tmp_path, True
 
-        # I/O バウンドなフォーマット変換を ThreadPoolExecutor で並列化。
-        # モデル推論（GPU/MPS）はシリアルで安全に実行する。
-        n_workers = min(len(abs_paths), 4)
-        with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            preproc_results = list(pool.map(_preprocess_file, abs_paths))
+        # フォーマット変換は推論と同じループで「先行 2 件だけ」パイプライン化。
+        # 以前は全ファイルを一括変換していたため、大量バッチで TEMP に
+        # 非圧縮 WAV が O(全件) 滞留し（1 曲 ≈ 40-50MB）、さらにキャンセルで
+        # ループを抜けると未処理分の一時ファイルが削除されず残留していた。
+        from collections import deque
 
-        # モデル推論（シリアル）
         failures = []
-        for inp_path, was_reformatted in preproc_results:
-            if cancel_event is not None and cancel_event.is_set():
-                infos.append("Cancelled.")
-                yield "\n".join(infos)
-                return
+        pending = deque()
+        next_idx = 0
+
+        def _submit_next(pool):
+            nonlocal next_idx
+            if next_idx < len(abs_paths):
+                pending.append(pool.submit(_preprocess_file, abs_paths[next_idx]))
+                next_idx += 1
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            _submit_next(pool)
+            _submit_next(pool)
             try:
-                pre_fun._path_audio_(inp_path, save_root_ins, save_root_vocal, format0)
-                infos.append("%s->Success" % (os.path.basename(inp_path)))
-                yield "\n".join(infos)
-            except Exception:
-                failures.append(inp_path)
-                infos.append(
-                    "%s->%s" % (os.path.basename(inp_path), traceback.format_exc())
-                )
-                yield "\n".join(infos)
-            finally:
-                if was_reformatted and os.path.exists(inp_path):
+                while pending:
+                    fut = pending.popleft()
+                    inp_path, was_reformatted = fut.result()
+                    _submit_next(pool)
+                    if cancel_event is not None and cancel_event.is_set():
+                        if was_reformatted and os.path.exists(inp_path):
+                            try:
+                                os.remove(inp_path)
+                            except Exception:
+                                pass
+                        infos.append("Cancelled.")
+                        yield "\n".join(infos)
+                        return
                     try:
-                        os.remove(inp_path)
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to remove temporary file %s: %s", inp_path, e
+                        pre_fun._path_audio_(
+                            inp_path, save_root_ins, save_root_vocal, format0
                         )
+                        infos.append("%s->Success" % (os.path.basename(inp_path)))
+                        yield "\n".join(infos)
+                    except Exception:
+                        failures.append(inp_path)
+                        infos.append(
+                            "%s->%s"
+                            % (os.path.basename(inp_path), traceback.format_exc())
+                        )
+                        yield "\n".join(infos)
+                    finally:
+                        if was_reformatted and os.path.exists(inp_path):
+                            try:
+                                os.remove(inp_path)
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to remove temporary file %s: %s",
+                                    inp_path,
+                                    e,
+                                )
+            finally:
+                # Drain in-flight conversions so no temp file is left behind
+                # on cancel / error paths.
+                for fut in pending:
+                    try:
+                        p, tmp = fut.result()
+                        if tmp and os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
         if failures:
             raise RuntimeError(
                 "UVR failed for %s file(s): %s" % (len(failures), failures)

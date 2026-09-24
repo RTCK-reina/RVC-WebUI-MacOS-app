@@ -63,6 +63,13 @@ class VC:
 
         self.config = config
 
+        # (sid, mtime) of the currently loaded model plus its load_vc result,
+        # so repeated load_vc calls for the same unchanged .pth (the RPC
+        # client calls load_model before every conversion) skip the multi-
+        # second deserialize + device upload entirely.
+        self._loaded_key = None
+        self._loaded_info = None
+
     # -----------------------------------------------------------------
     # Plain-data interface for the .app RPC server (no Gradio-shaped
     # return values). Mirrors get_vc() but returns structured dicts.
@@ -83,12 +90,37 @@ class VC:
                     torch.cuda.empty_cache()
                 elif torch.backends.mps.is_available():
                     torch.mps.empty_cache()
+            self._loaded_key = None
+            self._loaded_info = None
             return {"loaded": False}
 
         weight_root = require_env_root("weight_root")
         person = str(resolve_under(weight_root, sid, "sid"))
         if not os.path.isfile(person):
             raise FileNotFoundError(f"Model file not found under weight_root: {sid}")
+
+        try:
+            load_key = (sid, os.path.getmtime(person))
+        except OSError:
+            load_key = None
+        if (
+            load_key is not None
+            and load_key == self._loaded_key
+            and self.net_g is not None
+            and self._loaded_info is not None
+        ):
+            logger.info("Model already loaded, skipping reload: %s", sid)
+            return self._loaded_info
+
+        # Release the previous synthesizer before loading the next one so both
+        # never sit on the device at the same time (allocator fragmentation /
+        # transient double residency on model switch).
+        if self.net_g is not None:
+            del self.net_g
+            self.net_g = None
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+
         logger.info(f"Loading: {person}")
         self.net_g, self.cpt = load_synthesizer(person, self.config.device)
         self.tgt_sr = self.cpt["config"][-1]
@@ -110,7 +142,7 @@ class VC:
         n_spk = self.cpt["config"][-3]
         index_path = get_index_path_from_model(sid)
 
-        return {
+        info = {
             "loaded": True,
             "sid": sid,
             "n_spk": int(n_spk),
@@ -120,6 +152,9 @@ class VC:
             "index_path": index_path,
             "model_info": show_model_info(self.cpt),
         }
+        self._loaded_key = load_key
+        self._loaded_info = info
+        return info
 
     def get_vc(self, sid, *to_return_protect):
         logger.info("Get sid: " + sid)
@@ -180,6 +215,9 @@ class VC:
             raise FileNotFoundError(f"Model file not found under weight_root: {sid}")
         logger.info(f"Loading: {person}")
 
+        # Legacy Gradio path bypasses the load_vc cache; invalidate it.
+        self._loaded_key = None
+        self._loaded_info = None
         self.net_g, self.cpt = load_synthesizer(person, self.config.device)
         self.tgt_sr = self.cpt["config"][-1]
         self.cpt["config"][-3] = self.cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
@@ -278,7 +316,10 @@ class VC:
                 self.version,
                 protect,
                 f0_file,
-            ).astype(np.int16)
+            )
+            # Round-to-nearest before the int16 cast: a bare astype truncates
+            # toward zero, which adds ~0.5 LSB of signal-correlated distortion.
+            audio_opt = np.rint(audio_opt).astype(np.int16)
             if self.tgt_sr != resample_sr >= 16000:
                 tgt_sr = resample_sr
             else:

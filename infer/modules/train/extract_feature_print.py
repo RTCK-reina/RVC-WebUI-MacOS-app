@@ -13,7 +13,12 @@ from infer.lib.audio import load_audio
 from infer.lib.torch_compat import legacy_load
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+# Bounded allocator (see configs/config.py): 0.0 disabled the MPS limit and
+# let runaway allocations push macOS into swap instead of raising OOM.
+os.environ.setdefault(
+    "PYTORCH_MPS_HIGH_WATERMARK_RATIO",
+    os.environ.get("RVC_MPS_WATERMARK_RATIO", "1.7"),
+)
 
 device = sys.argv[1]
 n_part = int(sys.argv[2])
@@ -111,48 +116,80 @@ model.eval()
 
 todo = sorted(list(os.listdir(wavPath)))[i_part::n_part]
 n = max(1, len(todo) // 10)  # 最多打印十条
+
+# Batched extraction. Preprocess emits mostly identically-sized slices
+# (per * sr samples), so files are grouped by EXACT sample count and each
+# group is forwarded through HuBERT as one batch. Same-length batching means
+# no padding and therefore bit-identical outputs vs. the old one-file-at-a-
+# time loop — while cutting the number of model invocations by ~batch size.
+BATCH = max(1, int(os.environ.get("RVC_EXTRACT_BATCH", "8")))
+_done_count = 0
+failures = []
+
+
+def _flush_bucket(bucket):
+    """Run one same-length batch through the model and save each output."""
+    global _done_count
+    files = [fname for fname, _ in bucket]
+    try:
+        batch = torch.cat([t for _, t in bucket], dim=0)
+        batch = (
+            batch.half().to(device)
+            if is_half and device not in ["mps", "cpu"]
+            else batch.to(device)
+        )
+        with torch.no_grad():
+            logits = model.extract_features(
+                source=batch,
+                padding_mask=None,  # equivalent to the old all-False mask
+                output_layer=9 if version == "v1" else 12,
+            )
+            out = model.final_proj(logits[0]) if version == "v1" else logits[0]
+        out = out.float().cpu().numpy()
+        for i, fname in enumerate(files):
+            feats_i = out[i]
+            out_path = "%s/%s" % (outPath, fname.replace("wav", "npy"))
+            if np.isnan(feats_i).sum() == 0:
+                np.save(out_path, feats_i, allow_pickle=False)
+            else:
+                printt("%s-contains nan" % fname)
+            _done_count += 1
+            if _done_count % n == 0:
+                printt(
+                    "now-%s,all-%s,%s,%s"
+                    % (len(todo), _done_count, fname, feats_i.shape)
+                )
+    except Exception:
+        failures.extend(files)
+        printt("%s-feature-fail-%s" % (files, traceback.format_exc()))
+
+
 if len(todo) == 0:
     printt("no-feature-todo")
 else:
-    printt("all-feature-%s" % len(todo))
-    failures = []
-    for idx, file in enumerate(todo):
+    printt("all-feature-%s (batch=%s)" % (len(todo), BATCH))
+    buckets = {}  # sample_count -> list[(file, tensor[1, L])]
+    for file in todo:
         try:
-            if file.endswith(".wav"):
-                wav_path = "%s/%s" % (wavPath, file)
-                out_path = "%s/%s" % (outPath, file.replace("wav", "npy"))
-
-                if os.path.exists(out_path):
-                    continue
-
-                feats = readwave(wav_path, normalize=saved_cfg.task.normalize)
-                padding_mask = torch.BoolTensor(feats.shape).fill_(False)
-                inputs = {
-                    "source": (
-                        feats.half().to(device)
-                        if is_half and device not in ["mps", "cpu"]
-                        else feats.to(device)
-                    ),
-                    "padding_mask": padding_mask.to(device),
-                    "output_layer": 9 if version == "v1" else 12,  # layer 9
-                }
-                with torch.no_grad():
-                    logits = model.extract_features(**inputs)
-                    feats = (
-                        model.final_proj(logits[0]) if version == "v1" else logits[0]
-                    )
-
-                feats = feats.squeeze(0).float().cpu().numpy()
-                if np.isnan(feats).sum() == 0:
-                    np.save(out_path, feats, allow_pickle=False)
-                else:
-                    printt("%s-contains nan" % file)
-                if idx % n == 0:
-                    printt("now-%s,all-%s,%s,%s" % (len(todo), idx, file, feats.shape))
+            if not file.endswith(".wav"):
+                continue
+            wav_path = "%s/%s" % (wavPath, file)
+            out_path = "%s/%s" % (outPath, file.replace("wav", "npy"))
+            if os.path.exists(out_path):
+                continue
+            feats = readwave(wav_path, normalize=saved_cfg.task.normalize)
+            key = feats.shape[-1]
+            buckets.setdefault(key, []).append((file, feats))
+            if len(buckets[key]) >= BATCH:
+                _flush_bucket(buckets.pop(key))
         except Exception:
             failures.append(file)
             printt("%s-feature-fail-%s" % (file, traceback.format_exc()))
+    for bucket in buckets.values():
+        _flush_bucket(bucket)
     if failures:
-        printt("feature extraction failed for %s file(s): %s" % (len(failures), failures))
+        printt(
+            "feature extraction failed for %s file(s): %s" % (len(failures), failures)
+        )
         raise SystemExit(1)
     printt("all-feature-done")

@@ -305,6 +305,7 @@ def _tail_log_until_done(
     """
     last_size = 0
     last_tail = ""
+    last_tail_raw = ""
     percent = 0.0
     # Loop every 0.2s so cancel_event detection is at most ~200ms late,
     # but only actually re-read/emit once per second to avoid log churn.
@@ -341,16 +342,27 @@ def _tail_log_until_done(
             try:
                 if log_path.exists():
                     size = log_path.stat().st_size
+                    if size < last_size:
+                        # Log was truncated/rotated — start over.
+                        last_size = 0
                     if size != last_size:
+                        # Incremental read: long trainings grow train.log to
+                        # tens of MB, and re-reading the whole file every
+                        # second burned CPU/IO proportional to run length.
                         with open(
                             log_path, "r", encoding="utf-8", errors="replace"
                         ) as f:
-                            content = f.read()
+                            f.seek(last_size)
+                            delta = f.read()
                         last_size = size
-                        # Show the last ~500 chars of log as progress message.
-                        last_tail = content[-500:].strip().replace("\n", " | ")
+                        # Rolling window (delta appended to the previous tail)
+                        # is enough for both the display tail and the percent
+                        # estimator, which only looks at the LATEST epoch line.
+                        window = (last_tail_raw + delta)[-65536:]
+                        last_tail_raw = window
+                        last_tail = window[-500:].strip().replace("\n", " | ")
                         if percent_from_log:
-                            derived = percent_from_log(content)
+                            derived = percent_from_log(window)
                             if derived is not None:
                                 percent = derived
                 emit_progress(task_id, percent, last_tail or "running...", phase)
@@ -549,6 +561,16 @@ def rpc_extract_f0(params: dict, ctx):
     gpus = params.get("gpus", "0").strip()
     gpus_list = [g for g in gpus.split("-") if g.strip()]
     n_p = int(params.get("n_p", max(1, config.n_cpu)))
+    # NN-based F0 extractors (rmvpe/crepe/fcpe) run on the GPU: spawning
+    # cpu_count processes made each one load its own ~180MB model onto the
+    # SAME device and fight for it — slower than 1-2 workers and n_p x the
+    # memory. The cpu_count default only makes sense for harvest/dio/pm.
+    if (
+        if_f0
+        and f0_method in ("rmvpe", "crepe", "fcpe")
+        and str(config.device) != "cpu"
+    ):
+        n_p = min(n_p, 2)
     task_id = params.get("task_id", f"extract_f0_{int(time.time()*1000)}")
 
     exp_dir = _exp_dir(config, exp_name)
@@ -707,7 +729,30 @@ def rpc_train(params: dict, ctx):
     pretrained_G = params.get("pretrained_G", "")
     pretrained_D = params.get("pretrained_D", "")
     gpus = params.get("gpus", "")
-    if_cache_gpu = bool(params.get("if_cache_gpu", False))
+    if_cache_gpu = params.get("if_cache_gpu", None)
+    if if_cache_gpu is None:
+        # Default ON for MPS when the dataset is small enough: on Apple
+        # Silicon "GPU cache" is unified memory, and macOS keeps the
+        # DataLoader single-threaded (num_workers=0), so without the cache
+        # every epoch re-reads and re-collates the whole dataset in the
+        # training thread. Env overrides: RVC_TRAIN_CACHE=0/1 forces the
+        # choice, RVC_TRAIN_CACHE_MAX_MB (default 2048) bounds the auto-on.
+        env_force = os.environ.get("RVC_TRAIN_CACHE")
+        if env_force is not None:
+            if_cache_gpu = env_force == "1"
+        elif str(config.device) == "mps":
+            try:
+                _exp = _exp_dir(config, exp_name)
+                dataset_bytes = sum(
+                    p.stat().st_size for p in _exp.rglob("*") if p.is_file()
+                )
+                limit_mb = float(os.environ.get("RVC_TRAIN_CACHE_MAX_MB", "2048"))
+                if_cache_gpu = dataset_bytes <= limit_mb * 1024 * 1024
+            except OSError:
+                if_cache_gpu = False
+        else:
+            if_cache_gpu = False
+    if_cache_gpu = bool(if_cache_gpu)
     if_save_every_weights = bool(params.get("if_save_every_weights", True))
     version = _safe_version(params.get("version", "v2"))
     author = params.get("author", "")
@@ -983,9 +1028,11 @@ def rpc_train_index(params: dict, ctx):
         if r := _check_cancel():
             return r
         big_npy = np.concatenate(npys, 0)
-        idx = np.arange(big_npy.shape[0])
-        np.random.shuffle(idx)
-        big_npy = big_npy[idx]
+        # Free the per-file list immediately and shuffle IN PLACE — the old
+        # permutation-index gather (`big_npy[idx]`) allocated a second full
+        # copy of the feature matrix (GB-scale on long datasets).
+        del npys
+        np.random.shuffle(big_npy)
         if big_npy.shape[0] > 2e5:
             emit_progress(task_id, 25, "kmeans to 10k centers", "index")
             if r := _check_cancel():
@@ -1004,7 +1051,8 @@ def rpc_train_index(params: dict, ctx):
         if r := _check_cancel():
             return r
 
-        np.save(exp_dir / "total_fea.npy", big_npy)
+        # NOTE: the legacy `total_fea.npy` dump was removed — nothing in this
+        # codebase ever read it back, and it cost GB-scale disk per experiment.
         # n_ivf must be >= 1; with very small datasets (< 39 features) the
         # original `min(int(16*sqrt(N)), N//39)` collapses to 0 and FAISS
         # rejects "IVF0,Flat". max(1, ...) keeps tiny datasets buildable
