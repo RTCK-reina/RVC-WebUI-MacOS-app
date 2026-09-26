@@ -24,6 +24,25 @@ def printt(strr, *args):
         print(strr % args)
 
 
+def _rms_torch(y, frame_length, hop_length):
+    """Device-side equivalent of librosa.feature.rms (center=True, zero pad).
+
+    Returns shape (1, n_frames), matching librosa's output layout. Keeping the
+    computation on the torch device removes two GPU->CPU round-trips (each an
+    implicit full MPS sync) from every realtime block when rms_mix_rate < 1.
+
+    NOTE: gui.py follows the upstream pattern of importing torch inside the
+    __main__ block, so this helper imports it locally (a cached sys.modules
+    lookup after the first call) instead of assuming a module-level name.
+    """
+    import torch
+
+    pad = frame_length // 2
+    y = torch.nn.functional.pad(y[None, None, :], (pad, pad), mode="constant")[0, 0]
+    frames = y.unfold(0, frame_length, hop_length)
+    return torch.sqrt(frames.pow(2).mean(-1)).unsqueeze(0)
+
+
 def phase_vocoder(a, b, fade_out, fade_in):
     window = torch.sqrt(fade_out * fade_in)
     fa = torch.fft.rfft(a * window)
@@ -562,10 +581,23 @@ if __name__ == "__main__":
         def event_handler(self):
             global flag_vc
             while True:
-                event, values = self.window.read()
+                # timeout=500ms so the loop can mirror the inference time
+                # measured by the audio callback without the callback touching
+                # Tk widgets from the audio thread.
+                event, values = self.window.read(timeout=500)
                 if event == sg.WINDOW_CLOSED:
                     self.stop_stream()
                     exit()
+                _ms = getattr(self, "_last_infer_time_ms", None)
+                if (
+                    flag_vc
+                    and _ms is not None
+                    and _ms != getattr(self, "_shown_infer_time_ms", None)
+                ):
+                    self._shown_infer_time_ms = _ms
+                    self.window["infer_time"].update(_ms)
+                if event == sg.TIMEOUT_KEY:
+                    continue
                 if event == "reload_devices" or event == "sg_hostapi":
                     self.gui_config.sg_hostapi = values["sg_hostapi"]
                     self.update_devices(hostapi_name=values["sg_hostapi"])
@@ -991,24 +1023,22 @@ if __name__ == "__main__":
                     input_wav = self.input_wav_denoise[self.extra_frame :]
                 else:
                     input_wav = self.input_wav[self.extra_frame :]
-                rms1 = librosa.feature.rms(
-                    y=input_wav[: infer_wav.shape[0]].cpu().numpy(),
+                rms1 = _rms_torch(
+                    input_wav[: infer_wav.shape[0]],
                     frame_length=4 * self.zc,
                     hop_length=self.zc,
                 )
-                rms1 = torch.from_numpy(rms1).to(self.config.device)
                 rms1 = F.interpolate(
                     rms1.unsqueeze(0),
                     size=infer_wav.shape[0] + 1,
                     mode="linear",
                     align_corners=True,
                 )[0, 0, :-1]
-                rms2 = librosa.feature.rms(
-                    y=infer_wav[:].cpu().numpy(),
+                rms2 = _rms_torch(
+                    infer_wav,
                     frame_length=4 * self.zc,
                     hop_length=self.zc,
                 )
-                rms2 = torch.from_numpy(rms2).to(self.config.device)
                 rms2 = F.interpolate(
                     rms2.unsqueeze(0),
                     size=infer_wav.shape[0] + 1,
@@ -1057,8 +1087,11 @@ if __name__ == "__main__":
                 .numpy()
             )
             total_time = time.perf_counter() - start_time
-            if flag_vc:
-                self.window["infer_time"].update(int(total_time * 1000))
+            # Do NOT touch the GUI from the audio callback: Tk widgets are not
+            # thread-safe and a widget update can block for milliseconds under
+            # GIL/redraw pressure — a direct cause of audio underruns. The
+            # event loop polls this value instead.
+            self._last_infer_time_ms = int(total_time * 1000)
             # printt("Infer time: %.2f", total_time)
 
         def update_devices(self, hostapi_name=None):

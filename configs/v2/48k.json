@@ -16,7 +16,8 @@
     "c_kl": 1.0,
     "num_workers": 4,
     "prefetch_factor": 8,
-    "accumulation_steps": 1
+    "accumulation_steps": 1,
+    "grad_clip_norm": 0.0
   },
   "data": {
     "max_wav_value": 32768.0,

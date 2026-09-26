@@ -16,7 +16,6 @@ faiss-cpu
 Cython
 pydub>=0.25.1
 praat-parselmouth>=0.4.2
-Pillow>=9.1.1
 resampy>=0.4.2
 scikit-learn
 tqdm>=4.63.1
@@ -36,4 +35,5 @@ pybase16384
 # New for the .app build:
 psutil>=5.9.0
 sounddevice>=0.4.6
-noisereduce>=3.0.0
+# Removed (2026-08): Pillow / noisereduce — no import site anywhere in the
+# codebase (realtime denoise uses the torch TorchGate implementation).

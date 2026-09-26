@@ -54,11 +54,19 @@ from random import randint, shuffle
 import torch
 from contextlib import nullcontext
 
+# macOS (MPS/CPU) has no CUDA AMP/GradScaler — fp16 training is disabled in
+# this port. As an opt-in experiment (RVC_MPS_AMP=1), the forward passes can
+# run under bfloat16 autocast on MPS: bf16 has fp32's exponent range so no
+# GradScaler is needed, and activations/bandwidth roughly halve. Loss
+# computation call sites pass enabled=False and stay fp32 either way.
+_MPS_AMP = (
+    os.environ.get("RVC_MPS_AMP", "0") == "1" and torch.backends.mps.is_available()
+)
 
-# macOS (MPS/CPU) has no AMP/GradScaler — fp16 training is disabled everywhere
-# in this port. These stubs preserve the call-site shape used by the training
-# loop without pulling in any CUDA-specific code paths.
+
 def autocast(enabled=False):
+    if _MPS_AMP:
+        return torch.autocast(device_type="mps", dtype=torch.bfloat16, enabled=enabled)
     return nullcontext()
 
 
@@ -77,6 +85,20 @@ class GradScaler:
 
     def update(self):
         pass
+
+
+def _grad_norm_or_clip(parameters, max_norm: float) -> float:
+    """Pre-step total grad norm; clips in place when ``max_norm > 0``.
+
+    Returns the PRE-clip norm either way so the grad_norm_* scalars logged
+    for tensorboard stay comparable whether clipping is enabled or not.
+    C-1 (docs/conditional_review.md): opt-in via ``train.grad_clip_norm``
+    (default 0 = disabled). MPS runs fp32 where grad explosions are rare,
+    so this is a safety valve rather than an always-on change.
+    """
+    if max_norm > 0:
+        return float(torch.nn.utils.clip_grad_norm_(parameters, max_norm))
+    return total_grad_norm(parameters)
 
 
 from time import sleep
@@ -134,6 +156,58 @@ except ImportError:
 
         def close(self):
             pass
+
+
+# True only when the real tensorboard writer is importable. The .app bundle
+# ships the no-op stub above; rendering matplotlib spectrograms for a writer
+# that throws them away wasted several hundred ms (plus 3 GPU syncs) per
+# image-log step.
+_TB_AVAILABLE = "tensorboard" in getattr(SummaryWriter, "__module__", "")
+
+
+# ---------------------------------------------------------------------------
+# Optional EMA (exponential moving average) of the generator weights.
+# Standard practice for GAN vocoders (HiFiGAN/VITS lineage): the averaged
+# weights reduce high-frequency artifacts and epoch-to-epoch variance.
+# Opt-in via RVC_EMA=1; decay via RVC_EMA_DECAY (default 0.999). When enabled,
+# each save_small_model() call also writes a sibling "<name>_ema.pth".
+# ---------------------------------------------------------------------------
+_EMA_ENABLED = os.environ.get("RVC_EMA", "0") == "1"
+_EMA_DECAY = float(os.environ.get("RVC_EMA_DECAY", "0.999"))
+_ema_state = None
+
+
+def _ema_update(model):
+    """Update the EMA shadow weights after an optimizer step (device-side)."""
+    global _ema_state
+    if not _EMA_ENABLED:
+        return
+    sd = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+    with torch.no_grad():
+        if _ema_state is None:
+            _ema_state = {
+                k: (
+                    v.detach().clone().float()
+                    if v.dtype.is_floating_point
+                    else v.detach().clone()
+                )
+                for k, v in sd.items()
+            }
+            return
+        d = _EMA_DECAY
+        for k, v in sd.items():
+            e = _ema_state[k]
+            if v.dtype.is_floating_point:
+                e.mul_(d).add_(v.detach().float(), alpha=1.0 - d)
+            else:
+                e.copy_(v)
+
+
+def _ema_ckpt():
+    """Return the EMA weights as a plain state-dict (or None if unavailable)."""
+    if not _EMA_ENABLED or _ema_state is None:
+        return None
+    return dict(_ema_state)
 
 
 from infer.lib.train.data_utils import (
@@ -407,31 +481,21 @@ def run(rank, n_gpus, hps: utils.HParams, logger: logging.Logger):
                 logger.info("loaded pretrained %s" % (hps.pretrainG))
             if hasattr(net_g, "module"):
                 logger.info(
-                    net_g.module.load_state_dict(
-                        load_weights(hps.pretrainG)["model"]
-                    )
+                    net_g.module.load_state_dict(load_weights(hps.pretrainG)["model"])
                 )  ##测试不加载优化器
             else:
                 logger.info(
-                    net_g.load_state_dict(
-                        load_weights(hps.pretrainG)["model"]
-                    )
+                    net_g.load_state_dict(load_weights(hps.pretrainG)["model"])
                 )  ##测试不加载优化器
         if hps.pretrainD != "":
             if rank == 0:
                 logger.info("loaded pretrained %s" % (hps.pretrainD))
             if hasattr(net_d, "module"):
                 logger.info(
-                    net_d.module.load_state_dict(
-                        load_weights(hps.pretrainD)["model"]
-                    )
+                    net_d.module.load_state_dict(load_weights(hps.pretrainD)["model"])
                 )
             else:
-                logger.info(
-                    net_d.load_state_dict(
-                        load_weights(hps.pretrainD)["model"]
-                    )
-                )
+                logger.info(net_d.load_state_dict(load_weights(hps.pretrainD)["model"]))
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
         optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str - 2
@@ -589,6 +653,21 @@ def train_and_evaluate(
     # 数学的に等価（同一の勾配合計）なので品質への影響はない。
     accumulation_steps = max(1, getattr(hps.train, "accumulation_steps", 1))
 
+    # C-1 (conditional_review): opt-in grad clipping via train.grad_clip_norm.
+    # Default 0 keeps the legacy no-clip behavior.
+    grad_clip_norm = float(getattr(hps.train, "grad_clip_norm", 0.0) or 0.0)
+
+    # C-2 (conditional_review): opt-in linear LR warmup via the existing
+    # (previously unused) train.warmup_epochs field. The ramp is counted in
+    # ABSOLUTE batches ((epoch-1)*len(loader)+iter_idx) so resuming mid-run
+    # never re-warms — the field is documented as epochs, not steps.
+    warmup_steps = int(
+        max(0, getattr(hps.train, "warmup_epochs", 0) or 0) * len(train_loader)
+    )
+    # Scheduler-set LR for this epoch; warmup scales FROM these values.
+    _base_lr_g = [pg["lr"] for pg in optim_g.param_groups]
+    _base_lr_d = [pg["lr"] for pg in optim_d.param_groups]
+
     # Run steps
     epoch_recorder = EpochRecorder()
     grad_norm_d = grad_norm_g = 0.0  # accumulation 中に未定義になるのを防ぐ
@@ -636,8 +715,20 @@ def train_and_evaluate(
         # iter_idx（連続）を使い、batch_idx（cache shuffle 後に非連続）に依存しない。
         is_update_step = (iter_idx + 1) % accumulation_steps == 0
 
+        # C-2 warmup: scale both optimizers' LR by the linear ramp while
+        # inside the warmup window. Outside it, param_groups keep the
+        # scheduler-maintained value untouched.
+        if warmup_steps:
+            _abs_idx = (epoch - 1) * len(train_loader) + iter_idx
+            if _abs_idx < warmup_steps:
+                _f = (_abs_idx + 1) / warmup_steps
+                for _pg, _b in zip(optim_g.param_groups, _base_lr_g):
+                    _pg["lr"] = _b * _f
+                for _pg, _b in zip(optim_d.param_groups, _base_lr_d):
+                    _pg["lr"] = _b * _f
+
         # Calculate
-        with autocast(enabled=hps.train.fp16_run):
+        with autocast(enabled=hps.train.fp16_run or _MPS_AMP):
             (
                 y_hat,
                 ids_slice,
@@ -683,11 +774,11 @@ def train_and_evaluate(
         scaler.scale(loss_disc / accumulation_steps).backward()
         if is_update_step:
             scaler.unscale_(optim_d)
-            grad_norm_d = total_grad_norm(net_d.parameters())
+            grad_norm_d = _grad_norm_or_clip(net_d.parameters(), grad_clip_norm)
             scaler.step(optim_d)
             optim_d.zero_grad()
 
-        with autocast(enabled=hps.train.fp16_run):
+        with autocast(enabled=hps.train.fp16_run or _MPS_AMP):
             # Generator
             y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat)
             with autocast(enabled=False):
@@ -699,10 +790,11 @@ def train_and_evaluate(
         scaler.scale(loss_gen_all / accumulation_steps).backward()
         if is_update_step:
             scaler.unscale_(optim_g)
-            grad_norm_g = total_grad_norm(net_g.parameters())
+            grad_norm_g = _grad_norm_or_clip(net_g.parameters(), grad_clip_norm)
             scaler.step(optim_g)
             scaler.update()
             optim_g.zero_grad()
+            _ema_update(net_g)
 
         if rank == 0:
             if global_step % hps.train.log_interval == 0:
@@ -712,44 +804,63 @@ def train_and_evaluate(
                         epoch, 100.0 * batch_idx / len(train_loader)
                     )
                 )
+                # Pull every logged scalar to the CPU in ONE transfer.
+                # Formatting the tensors directly (f-strings / comparisons)
+                # triggered an implicit GPU sync per value — 10+ syncs per
+                # log step on top of the per-substep ones from losses.py.
+                with torch.no_grad():
+                    _named = [
+                        ("loss/d/total", loss_disc),
+                        ("loss/g/total", loss_gen_all),
+                        ("loss/g/fm", loss_fm),
+                        ("loss/g/mel", loss_mel),
+                        ("loss/g/kl", loss_kl),
+                    ]
+                    _named += [
+                        ("loss/g/{}".format(i), v) for i, v in enumerate(losses_gen)
+                    ]
+                    _named += [
+                        ("loss/d_r/{}".format(i), v)
+                        for i, v in enumerate(losses_disc_r)
+                    ]
+                    _named += [
+                        ("loss/d_g/{}".format(i), v)
+                        for i, v in enumerate(losses_disc_g)
+                    ]
+                    _vals = (
+                        torch.stack([v.detach().float() for _, v in _named])
+                        .cpu()
+                        .tolist()
+                    )
+                scalar_dict = {k: v for (k, _), v in zip(_named, _vals)}
                 # Amor For Tensorboard display
-                if loss_mel > 75:
-                    loss_mel = 75
-                if loss_kl > 9:
-                    loss_kl = 9
-
-                logger.info([global_step, lr])
-                logger.info(
-                    f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f},loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}"
-                )
-                scalar_dict = {
-                    "loss/g/total": loss_gen_all,
-                    "loss/d/total": loss_disc,
-                    "learning_rate": lr,
-                    "grad_norm_d": grad_norm_d,
-                    "grad_norm_g": grad_norm_g,
-                }
+                scalar_dict["loss/g/mel"] = min(scalar_dict["loss/g/mel"], 75)
+                scalar_dict["loss/g/kl"] = min(scalar_dict["loss/g/kl"], 9)
                 scalar_dict.update(
                     {
-                        "loss/g/fm": loss_fm,
-                        "loss/g/mel": loss_mel,
-                        "loss/g/kl": loss_kl,
+                        "learning_rate": lr,
+                        "grad_norm_d": grad_norm_d,
+                        "grad_norm_g": grad_norm_g,
                     }
                 )
 
-                scalar_dict.update(
-                    {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)}
-                )
-                scalar_dict.update(
-                    {"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)}
-                )
-                scalar_dict.update(
-                    {"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)}
+                logger.info([global_step, lr])
+                logger.info(
+                    "loss_disc=%.3f, loss_gen=%.3f, loss_fm=%.3f,"
+                    "loss_mel=%.3f, loss_kl=%.3f"
+                    % (
+                        scalar_dict["loss/d/total"],
+                        scalar_dict["loss/g/total"],
+                        scalar_dict["loss/g/fm"],
+                        scalar_dict["loss/g/mel"],
+                        scalar_dict["loss/g/kl"],
+                    )
                 )
                 # Image logs (mel spectrograms) are expensive to render.
-                # Write them at 10x the scalar interval to reduce overhead.
+                # Write them at 10x the scalar interval, and only when a real
+                # tensorboard writer exists (the .app ships a no-op stub).
                 _image_log_interval = hps.train.log_interval * 10
-                if global_step % _image_log_interval == 0:
+                if _TB_AVAILABLE and global_step % _image_log_interval == 0:
                     image_dict = {
                         "slice/mel_org": utils.plot_spectrogram_to_numpy(
                             y_mel[0].data.cpu().numpy()
@@ -777,14 +888,15 @@ def train_and_evaluate(
     # is_update_step が一度も True にならなかった場合も含む。
     if iter_idx > 0 and iter_idx % accumulation_steps != 0:
         scaler.unscale_(optim_d)
-        grad_norm_d = total_grad_norm(net_d.parameters())
+        grad_norm_d = _grad_norm_or_clip(net_d.parameters(), grad_clip_norm)
         scaler.step(optim_d)
         optim_d.zero_grad()
         scaler.unscale_(optim_g)
-        grad_norm_g = total_grad_norm(net_g.parameters())
+        grad_norm_g = _grad_norm_or_clip(net_g.parameters(), grad_clip_norm)
         scaler.step(optim_g)
         scaler.update()
         optim_g.zero_grad()
+        _ema_update(net_g)
 
     if epoch % hps.save_every_epoch == 0 and rank == 0:
         if hps.if_latest == 0:
@@ -838,6 +950,20 @@ def train_and_evaluate(
                     ),
                 )
             )
+            ema = _ema_ckpt()
+            if ema is not None:
+                logger.info(
+                    "saving EMA ckpt: %s"
+                    % save_small_model(
+                        ema,
+                        hps.sample_rate,
+                        hps.if_f0,
+                        hps.name + "_e%s_s%s_ema" % (epoch, global_step),
+                        epoch,
+                        hps.version,
+                        hps,
+                    )
+                )
 
     if rank == 0:
         logger.info("====> Epoch: {} {}".format(epoch, epoch_recorder.record()))
@@ -856,6 +982,20 @@ def train_and_evaluate(
                 )
             )
         )
+        ema = _ema_ckpt()
+        if ema is not None:
+            logger.info(
+                "saving final EMA ckpt:%s"
+                % save_small_model(
+                    ema,
+                    hps.sample_rate,
+                    hps.if_f0,
+                    hps.name + "_ema",
+                    epoch,
+                    hps.version,
+                    hps,
+                )
+            )
         sleep(1)
         os._exit(0)
 

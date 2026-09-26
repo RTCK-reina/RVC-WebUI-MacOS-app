@@ -2,6 +2,40 @@ from typing import Optional, Union
 
 import torch
 import numpy as np
+from numba import jit
+
+
+@jit(nopython=True)
+def _interpolate_f0_inplace(data: np.ndarray) -> np.ndarray:
+    """In-place gap interpolation over unvoiced (<=0) F0 frames.
+
+    Numba-compiled version of the previous pure-Python nested loop (which was
+    O(n^2)-ish on unvoiced-heavy audio and ran per chunk / realtime block).
+    Semantics are identical, including the intentional aliasing where filled
+    frames become visible to later iterations.
+    """
+    frame_number = data.shape[0]
+    last_value = 0.0
+    for i in range(frame_number):
+        if data[i] <= 0.0:
+            j = i + 1
+            for j in range(i + 1, frame_number):
+                if data[j] > 0.0:
+                    break
+            if j < frame_number - 1:
+                if last_value > 0.0:
+                    step = (data[j] - data[i - 1]) / float(j - i)
+                    for k in range(i, j):
+                        data[k] = data[i - 1] + step * (k - i + 1)
+                else:
+                    for k in range(i, j):
+                        data[k] = data[j]
+            else:
+                for k in range(i, frame_number):
+                    data[k] = last_value
+        else:
+            last_value = data[i]
+    return data
 
 
 class F0Predictor(object):
@@ -33,39 +67,10 @@ class F0Predictor(object):
         """
         对F0进行插值处理
         """
-
-        data = np.reshape(f0, (f0.size, 1))
-
-        vuv_vector = np.zeros((data.size, 1), dtype=np.float32)
-        vuv_vector[data > 0.0] = 1.0
-        vuv_vector[data <= 0.0] = 0.0
-
-        ip_data = data
-
-        frame_number = data.size
-        last_value = 0.0
-        for i in range(frame_number):
-            if data[i] <= 0.0:
-                j = i + 1
-                for j in range(i + 1, frame_number):
-                    if data[j] > 0.0:
-                        break
-                if j < frame_number - 1:
-                    if last_value > 0.0:
-                        step = (data[j] - data[i - 1]) / float(j - i)
-                        for k in range(i, j):
-                            ip_data[k] = data[i - 1] + step * (k - i + 1)
-                    else:
-                        for k in range(i, j):
-                            ip_data[k] = data[j]
-                else:
-                    for k in range(i, frame_number):
-                        ip_data[k] = last_value
-            else:
-                ip_data[i] = data[i]  # 这里可能存在一个没有必要的拷贝
-                last_value = data[i]
-
-        return ip_data[:, 0], vuv_vector[:, 0]
+        data = np.ascontiguousarray(f0, dtype=np.float64).reshape(-1).copy()
+        vuv_vector = (data > 0.0).astype(np.float32)
+        ip_data = _interpolate_f0_inplace(data)
+        return ip_data, vuv_vector
 
     def _resize_f0(self, x: np.ndarray, target_len: int):
         source = np.array(x)

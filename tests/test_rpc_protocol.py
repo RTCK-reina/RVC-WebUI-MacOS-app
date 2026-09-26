@@ -764,3 +764,64 @@ class TestCancelSentinel:
         with pytest.raises(SystemExit) as exc:
             _check_cancel(hp)
         assert exc.value.code == 130
+
+
+# ---------------------------------------------------------------------------
+# rpc_training._index_kmeans_clusters — C-5 動的 n_clusters の契約を固定。
+# (rpc_training は conftest のスタブ環境で import 可能。ヘルパーは pure Python。)
+# ---------------------------------------------------------------------------
+
+
+class TestIndexKMeansClusters:
+    def _fn(self):
+        import rpc_training
+
+        return rpc_training._index_kmeans_clusters
+
+    def test_small_datasets_skip_kmeans(self):
+        """~5k rows 以下では KMeans を実行しない (None) —
+        生ベクタのまま IVF に入れて検索精度を最大化する。"""
+        fn = self._fn()
+        for n in (0, 1, 256, 1000, 5120):
+            assert fn(n) is None, n
+
+    def test_floor_at_256(self):
+        """閾値直上では floor の 256 が効く。"""
+        fn = self._fn()
+        assert fn(5121) == 256
+        assert fn(6000) == 300
+        assert fn(20000) == 1000
+
+    def test_linear_scale_mid_range(self):
+        """中間レンジは N//20 の線形スケール。"""
+        fn = self._fn()
+        assert fn(100_000) == 5000
+        assert fn(199_999) == 9999
+
+    def test_cap_at_10000(self):
+        """上限はレガシーと同じ 10000。N>=200k で従来と同じクラスタ数。"""
+        fn = self._fn()
+        assert fn(200_000) == 10000
+        assert fn(1_000_000) == 10000
+        assert fn(10_000_000) == 10000
+
+    def test_monotonic_and_bounded(self):
+        """全区間で単調非減少かつ [256, 10000] か n_rows 未満に収まる。"""
+        fn = self._fn()
+        prev = 0
+        for n in range(5121, 300_000, 7831):
+            c = fn(n)
+            assert c is not None
+            assert 256 <= c <= 10000
+            assert c < n
+            assert c >= prev
+            prev = c
+
+    def test_kmeans_produces_fewer_rows_than_input(self):
+        """KMeans が走る全レンジで出力行数 < 入力行数
+        (MiniBatchKMeans は n_clusters <= n_samples を要求)。"""
+        fn = self._fn()
+        for n in (5121, 10_000, 50_000, 200_000, 5_000_000):
+            c = fn(n)
+            assert c is not None
+            assert c <= n

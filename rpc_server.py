@@ -44,6 +44,34 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
+# Emit "alive" BEFORE the heavy imports below. Swift's two-stage startup
+# handshake documents alive as "fast, pre-import" with a 20s timeout, but the
+# notification used to be sent from main() — i.e. AFTER torch/fairseq/etc.
+# finished importing. On a cold first launch (Gatekeeper verification + dyld
+# signature checks over the 1.5GB bundled env) that could exceed the timeout
+# and be misreported as a startup failure. Plain print is safe here: the
+# writer thread does not exist yet and nothing else owns stdout.
+# ---------------------------------------------------------------------------
+try:
+    sys.stdout.write(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "alive",
+                "params": {
+                    "pid": os.getpid(),
+                    "python_version": sys.version.split()[0],
+                    "stage": "pre-import",
+                },
+            }
+        )
+        + "\n"
+    )
+    sys.stdout.flush()
+except Exception:
+    pass
+
+# ---------------------------------------------------------------------------
 # Early CLI parsing -- we need --base-dir / --user-dir *before* importing
 # Config, because Config() resolves asset paths on construction.
 # ---------------------------------------------------------------------------
@@ -106,7 +134,12 @@ except Exception:
 
 if sys.platform == "darwin":
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+    # Bounded MPS allocator (see configs/config.py): "0.0" removed the limit
+    # entirely, so instead of a catchable OOM the machine went into swap.
+    os.environ.setdefault(
+        "PYTORCH_MPS_HIGH_WATERMARK_RATIO",
+        os.environ.get("RVC_MPS_WATERMARK_RATIO", "1.7"),
+    )
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 # Load env defaults (sha256 checksums, etc). These files ship inside the bundle.
@@ -156,17 +189,22 @@ from infer.modules.vc import VC, show_info, hash_similarity  # noqa: E402
 # module scope so the real-time audio callback doesn't pay an import-system
 # lookup + import-lock on every block.
 import librosa  # noqa: E402
-from infer.modules.uvr5.modules import uvr  # noqa: E402
-from infer.lib.train.process_ckpt import (  # noqa: E402
-    change_info,
-    extract_small_model,
-    merge,
-)
+
+# NOTE: infer.modules.uvr5.modules (uvr) and infer.lib.train.process_ckpt are
+# intentionally NOT imported at module scope anymore. UVR5 runs in a spawned
+# child process that does its own import, and the ckpt utilities are only
+# needed for the (rare) model merge/extract/change_info RPCs — importing them
+# here added network-definition + extra Config() construction time to every
+# app start. They are imported lazily at their call sites below.
 
 try:
     import psutil  # type: ignore
 except Exception:
     psutil = None  # Resource monitor degrades gracefully if unavailable.
+
+# Rolling realtime-factor estimate (processing seconds per audio second) used
+# by rpc_vc_single's ETA-based progress. Updated by EMA after each conversion.
+_VC_RTF = {"value": 1.0}
 
 
 def _empty_device_cache() -> None:
@@ -640,10 +678,14 @@ _AUDIO_OUTPUT_FORMATS = ("flac", "wav", "mp3", "m4a")
 
 
 def _output_root() -> Path:
-    return Path(
-        os.environ.get("output_root")
-        or (Path.home() / "Documents" / "RVC-WebUI" / "output")
-    ).expanduser().resolve()
+    return (
+        Path(
+            os.environ.get("output_root")
+            or (Path.home() / "Documents" / "RVC-WebUI" / "output")
+        )
+        .expanduser()
+        .resolve()
+    )
 
 
 def _index_roots() -> list[Path]:
@@ -678,7 +720,9 @@ def _require_existing_file(value: object, field: str) -> str:
     return str(path)
 
 
-def _default_output_path(input_path: str, model_sid: str, fmt: str, subdir: str) -> Path:
+def _default_output_path(
+    input_path: str, model_sid: str, fmt: str, subdir: str
+) -> Path:
     out_root = _output_root()
     out_dir = out_root / subdir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -692,11 +736,13 @@ def rpc_vc_single(params: dict) -> dict:
     sid = params["sid"]
     input_path = _require_existing_file(params["input_audio_path"], "input_audio_path")
     fmt = safe_format(params.get("format", "flac"), _AUDIO_OUTPUT_FORMATS)
-    file_index = _resolve_under_any(_index_roots(), params.get("file_index", ""), "file_index")
-    file_index2 = _resolve_under_any(_index_roots(), params.get("file_index2", ""), "file_index2")
-    default_output = _default_output_path(
-        input_path, sid, fmt, "inference"
+    file_index = _resolve_under_any(
+        _index_roots(), params.get("file_index", ""), "file_index"
     )
+    file_index2 = _resolve_under_any(
+        _index_roots(), params.get("file_index2", ""), "file_index2"
+    )
+    default_output = _default_output_path(input_path, sid, fmt, "inference")
     output_path = optional_file_under(
         _output_root(), params.get("output_path"), "output_path", default=default_output
     )
@@ -734,6 +780,18 @@ def rpc_vc_single(params: dict) -> dict:
             except BaseException as e:  # noqa: BLE001
                 err_box["error"] = e
 
+        # Honest-ish progress: estimate ETA from the input duration and a
+        # rolling realtime factor measured on previous conversions. The old
+        # implementation emitted a constant 40% every second, which
+        # contradicted the app's "honest progress bars" contract and forced
+        # pointless UI refreshes with identical values.
+        try:
+            _audio_secs = float(librosa.get_duration(path=input_path))
+        except Exception:
+            _audio_secs = 0.0
+        _rtf = _VC_RTF["value"]
+        _start = time.monotonic()
+        _last_pct = 5
         t = threading.Thread(target=runner, daemon=True)
         t.start()
         tick = 0
@@ -741,7 +799,21 @@ def rpc_vc_single(params: dict) -> dict:
             t.join(timeout=0.25)
             tick += 1
             if tick % 4 == 0:  # ~1s
-                emit_progress(task_id, 40, "推論中…", "inference")
+                if _audio_secs > 0 and _rtf > 0:
+                    _est_total = _audio_secs * _rtf
+                    _pct = 10 + min(
+                        79, int(79 * (time.monotonic() - _start) / max(_est_total, 0.1))
+                    )
+                else:
+                    _pct = 40
+                if _pct != _last_pct:
+                    _last_pct = _pct
+                    emit_progress(task_id, _pct, "推論中…（推定）", "inference")
+        if _audio_secs > 0:
+            _measured = (time.monotonic() - _start) / _audio_secs
+            # Exponential moving average keeps the estimator stable across
+            # differing model/index settings.
+            _VC_RTF["value"] = 0.7 * _VC_RTF["value"] + 0.3 * _measured
         if "error" in err_box:
             raise err_box["error"]
         info, opt = result_box["result"]
@@ -775,8 +847,12 @@ def rpc_vc_multi(params: dict) -> dict:
     dir_path = params.get("dir_path", "") or ""
     paths = params.get("paths", []) or []
     fmt = safe_format(params.get("format", "flac"), _AUDIO_OUTPUT_FORMATS)
-    file_index = _resolve_under_any(_index_roots(), params.get("file_index", ""), "file_index")
-    file_index2 = _resolve_under_any(_index_roots(), params.get("file_index2", ""), "file_index2")
+    file_index = _resolve_under_any(
+        _index_roots(), params.get("file_index", ""), "file_index"
+    )
+    file_index2 = _resolve_under_any(
+        _index_roots(), params.get("file_index2", ""), "file_index2"
+    )
     out_root = optional_dir_under(
         _output_root(),
         params.get("output_dir"),
@@ -792,12 +868,13 @@ def rpc_vc_multi(params: dict) -> dict:
         if dir_path:
             input_dir = Path(dir_path).expanduser().resolve()
             if not input_dir.is_dir():
-                raise PathValidationError(f"dir_path does not exist or is not a directory: {dir_path}")
+                raise PathValidationError(
+                    f"dir_path does not exist or is not a directory: {dir_path}"
+                )
             all_paths = [str(p) for p in input_dir.iterdir() if p.is_file()]
         else:
             all_paths = [
-                _require_existing_file(p, f"paths[{i}]")
-                for i, p in enumerate(paths)
+                _require_existing_file(p, f"paths[{i}]") for i, p in enumerate(paths)
             ]
         total = len(all_paths)
         if total == 0:
@@ -1024,10 +1101,14 @@ def rpc_uvr5(params: dict) -> dict:
     if inp_root:
         inp_dir = Path(inp_root).expanduser().resolve()
         if not inp_dir.is_dir():
-            return {"status": "error", "error": f"Input directory not found: {inp_root}"}
+            return {
+                "status": "error",
+                "error": f"Input directory not found: {inp_root}",
+            }
         inp_root = str(inp_dir)
         input_paths = [
-            str(p) for p in inp_dir.iterdir()
+            str(p)
+            for p in inp_dir.iterdir()
             if p.is_file() and _is_audio_file(p.name, strict=True)
         ]
     else:
@@ -1106,10 +1187,16 @@ def rpc_model_info(params: dict) -> dict:
     path = params["path"]
     info = show_info(path)
     status = "error" if info.lstrip().startswith("Traceback") else "success"
-    return {"status": status, "info": info, "error": info if status == "error" else None}
+    return {
+        "status": status,
+        "info": info,
+        "error": info if status == "error" else None,
+    }
 
 
 def rpc_model_change_info(params: dict) -> dict:
+    from infer.lib.train.process_ckpt import change_info  # lazy heavy import
+
     path = params["path"]
     info = params.get("info", "")
     name = params.get("name", "")
@@ -1196,6 +1283,8 @@ def _sr_key(raw_sr) -> str:
 
 
 def rpc_model_merge(params: dict) -> dict:
+    from infer.lib.train.process_ckpt import merge  # lazy heavy import
+
     task_id = params.get("task_id", f"model_merge_{int(time.time()*1000)}")
     return _require_success(
         _run_with_progress(
@@ -1220,6 +1309,8 @@ def rpc_model_merge(params: dict) -> dict:
 
 
 def rpc_model_extract(params: dict) -> dict:
+    from infer.lib.train.process_ckpt import extract_small_model  # lazy import
+
     task_id = params.get("task_id", f"model_extract_{int(time.time()*1000)}")
     # extract_small_model expects sr as a string key ("40k" / "48k" / "32k")
     # because it indexes into hard-coded config tables keyed by that string.
@@ -1265,8 +1356,9 @@ def rpc_export_onnx(params: dict) -> dict:
         ckpt_path,
         str(output_path),
     )
-    if result.get("status") == "cancelled":
-        return result
+    # NOTE: _run_with_progress either returns {"result": ...} or raises; ONNX
+    # export is not cancellable (no "cancelled" status can be produced here).
+    _ = result
     return {"status": "success", "output_path": str(output_path)}
 
 
@@ -1324,6 +1416,8 @@ class _RealtimeVC:
         device_str: str,
         input_device=None,
         output_device=None,
+        extra_time: float = 2.5,
+        crossfade_time: float = 0.05,
     ):
         import sounddevice as sd
         import torchaudio.transforms as tat
@@ -1372,11 +1466,16 @@ class _RealtimeVC:
         self.zc = zc
         self.block_frame = int(np.round(block_time * samplerate / zc)) * zc
         self.block_frame_16k = 160 * self.block_frame // zc
-        crossfade_time = 0.05
+        # extra_time controls how much left-context every block's HuBERT/enc_p
+        # pass consumes: with block_time=0.25 and the historical fixed 2.5s,
+        # ~90% of each realtime inference was context. It is now an RPC
+        # parameter (clamped 0.5-5.0) so lower-powered machines can trade a
+        # little boundary quality for a large per-block speedup.
+        crossfade_time = min(max(float(crossfade_time), 0.02), 0.5)
         self.crossfade_frame = int(np.round(crossfade_time * samplerate / zc)) * zc
         self.sola_buffer_frame = min(self.crossfade_frame, 4 * zc)
         self.sola_search_frame = zc
-        extra_time = 2.5
+        extra_time = min(max(float(extra_time), 0.5), 5.0)
         self.extra_frame = int(np.round(extra_time * samplerate / zc)) * zc
         total_len = (
             self.extra_frame
@@ -1426,6 +1525,28 @@ class _RealtimeVC:
             ).to(device_str)
         else:
             self.resampler2 = None
+
+        # Warm-up: run one inference over silence BEFORE opening the audio
+        # stream. The first MPS forward pass pays kernel compilation /
+        # pipeline setup and used to overrun the block budget, audibly
+        # dropping the first blocks of live audio.
+        try:
+            with torch.no_grad():
+                _warm = self.rvc.infer(
+                    self.input_wav_res,
+                    self.block_frame_16k,
+                    self.skip_head,
+                    self.return_length,
+                    self.f0method,
+                    self.protect,
+                )
+                if self.resampler2 is not None:
+                    self.resampler2(_warm)
+            del _warm
+        except Exception:
+            logger.warning(
+                "realtime warm-up inference failed (continuing)", exc_info=True
+            )
 
         self.stream = sd.Stream(
             callback=self._audio_callback,
@@ -1719,7 +1840,9 @@ def rpc_realtime_start(params: dict) -> dict:
 
     weight_root = require_env_root("weight_root")
     pth_path = _resolve_under_any([weight_root], params.get("pth_path", ""), "pth_path")
-    index_path = _resolve_under_any(_index_roots(), params.get("index_path", ""), "index_path")
+    index_path = _resolve_under_any(
+        _index_roots(), params.get("index_path", ""), "index_path"
+    )
     pitch = params.get("pitch", 0)
     formant = params.get("formant", 0)
     index_rate = params.get("index_rate", 0)
@@ -1728,6 +1851,13 @@ def rpc_realtime_start(params: dict) -> dict:
     sample_rate = int(params.get("sample_rate", 48000))
     f0method = params.get("f0_method", "fcpe")
     protect = params.get("protect", 0.33)
+    # Optional latency/quality knobs (see _RealtimeVC.__init__). Defaults
+    # preserve the historical behavior; RVC_RT_EXTRA_TIME provides a machine-
+    # wide override without a client change.
+    extra_time = float(
+        params.get("extra_time", os.environ.get("RVC_RT_EXTRA_TIME", 2.5))
+    )
+    crossfade_time = float(params.get("crossfade_time", 0.05))
     input_device = params.get("input_device")
     output_device = params.get("output_device")
 
@@ -1822,6 +1952,8 @@ def rpc_realtime_start(params: dict) -> dict:
             device_str=device,
             input_device=input_device,
             output_device=output_device,
+            extra_time=extra_time,
+            crossfade_time=crossfade_time,
         )
     except Exception as e:
         # The RVC model was fully built before the stream failed — drop it and

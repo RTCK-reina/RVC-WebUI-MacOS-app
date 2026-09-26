@@ -19,6 +19,14 @@ import traceback
 
 import numpy as np
 
+try:
+    # librosa's resampler backend; ships with the bundle. Used to resample
+    # the 16k copy directly instead of round-tripping through an in-memory
+    # WAV encode -> PyAV decode -> WAV encode per slice.
+    import soxr
+except ImportError:  # pragma: no cover - defensive fallback
+    soxr = None
+
 from infer.lib.audio import load_audio, float_np_array_to_wav_buf, save_audio
 from infer.lib.slicer2 import Slicer
 
@@ -59,7 +67,12 @@ class PreProcess:
     def norm_write(self, tmp_audio, idx0, idx1):
         tmp_max = np.abs(tmp_audio).max()
         if tmp_max <= 0:
-            raise ValueError("audio segment is silent")
+            # A fully silent segment (e.g. a tail slice) is simply not useful
+            # training data. Raising here used to fail the whole FILE (and,
+            # via pipeline_mp, the whole preprocess stage) because of one
+            # empty slice; skip it instead.
+            println("%s-%s-silent-skipped" % (idx0, idx1))
+            return
         if tmp_max > 2.5:
             print("%s-%s-%s-filtered" % (idx0, idx1, tmp_max))
             return
@@ -72,18 +85,33 @@ class PreProcess:
             self.sr,
             f32=True,
         )
-        with open("%s/%s_%s.wav" % (self.wavs16k_dir, idx0, idx1), "wb") as f:
-            f.write(
-                float_np_array_to_wav_buf(
-                    load_audio(
-                        float_np_array_to_wav_buf(tmp_audio, self.sr, f32=True),
-                        sr=16000,
-                        format="wav",
-                    ),
-                    16000,
-                    True,
-                ).getbuffer()
+        if soxr is not None:
+            # Direct array resample (sox HQ, same resampler family PyAV uses)
+            # — the previous implementation encoded the slice to an in-memory
+            # WAV, decoded it with PyAV, and re-encoded it, spending most of
+            # the time in container/codec overhead.
+            audio_16k = soxr.resample(
+                np.ascontiguousarray(tmp_audio, dtype=np.float32), self.sr, 16000
             )
+            save_audio(
+                "%s/%s_%s.wav" % (self.wavs16k_dir, idx0, idx1),
+                audio_16k,
+                16000,
+                f32=True,
+            )
+        else:
+            with open("%s/%s_%s.wav" % (self.wavs16k_dir, idx0, idx1), "wb") as f:
+                f.write(
+                    float_np_array_to_wav_buf(
+                        load_audio(
+                            float_np_array_to_wav_buf(tmp_audio, self.sr, f32=True),
+                            sr=16000,
+                            format="wav",
+                        ),
+                        16000,
+                        True,
+                    ).getbuffer()
+                )
 
     def pipeline(self, path, idx0):
         try:

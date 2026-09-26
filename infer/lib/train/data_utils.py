@@ -44,7 +44,12 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         for audiopath, text, pitch, pitchf, dv in self.audiopaths_and_text:
             if self.min_text_len <= len(text) and len(text) <= self.max_text_len:
                 audiopaths_and_text_new.append([audiopath, text, pitch, pitchf, dv])
-                lengths.append(os.path.getsize(audiopath) // (3 * self.hop_length))
+                # gt wavs are written by preprocess.py as float32 WAV (4 bytes per
+                # sample + 44-byte header); the old 2-bytes-derived constant
+                # overestimated every length by ~4/3, skewing bucket purity.
+                lengths.append(
+                    max(1, (os.path.getsize(audiopath) - 44) // (4 * self.hop_length))
+                )
         self.audiopaths_and_text = audiopaths_and_text_new
         self.lengths = lengths
 
@@ -252,7 +257,12 @@ class TextAudioLoader(torch.utils.data.Dataset):
         for audiopath, text, dv in self.audiopaths_and_text:
             if self.min_text_len <= len(text) and len(text) <= self.max_text_len:
                 audiopaths_and_text_new.append([audiopath, text, dv])
-                lengths.append(os.path.getsize(audiopath) // (3 * self.hop_length))
+                # gt wavs are written by preprocess.py as float32 WAV (4 bytes per
+                # sample + 44-byte header); the old 2-bytes-derived constant
+                # overestimated every length by ~4/3, skewing bucket purity.
+                lengths.append(
+                    max(1, (os.path.getsize(audiopath) - 44) // (4 * self.hop_length))
+                )
         self.audiopaths_and_text = audiopaths_and_text_new
         self.lengths = lengths
 
@@ -429,11 +439,26 @@ class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
 
     def _create_buckets(self):
         buckets = [[] for _ in range(len(self.boundaries) - 1)]
+        clamped = 0
         for i in range(len(self.lengths)):
             length = self.lengths[i]
             idx_bucket = self._bisect(length)
-            if idx_bucket != -1:
-                buckets[idx_bucket].append(i)
+            if idx_bucket == -1:
+                # Out-of-range samples (mostly short tail slices) used to be
+                # dropped silently from training. Clamp them into the nearest
+                # edge bucket instead and report how many were affected.
+                idx_bucket = (
+                    0 if length <= self.boundaries[0] else len(self.boundaries) - 2
+                )
+                clamped += 1
+            buckets[idx_bucket].append(i)
+        if clamped:
+            logger.info(
+                "DistributedBucketSampler: %d sample(s) outside bucket "
+                "boundaries were clamped to the nearest bucket instead of "
+                "being dropped",
+                clamped,
+            )
 
         for i in range(len(buckets) - 1, -1, -1):  #
             if len(buckets[i]) == 0:
